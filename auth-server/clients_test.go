@@ -1,41 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"os"
 	"strings"
 	"testing"
 )
 
-// loadDotEnv reads KEY=VALUE lines from .env into the test's environment
-// (restored automatically when the test ends) and returns them.
-func loadDotEnv(t *testing.T) map[string]string {
-	t.Helper()
-	f, err := os.Open(".env")
-	if err != nil {
-		t.Fatalf("open .env: %v", err)
-	}
-	defer f.Close()
-
-	vars := map[string]string{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		vars[k] = v
-		t.Setenv(k, v)
-	}
-	return vars
-}
-
 func TestRegistryLookup(t *testing.T) {
-	loadDotEnv(t)
 	reg := newClientRegistry()
 
 	cases := []struct {
@@ -61,7 +32,6 @@ func TestRegistryLookup(t *testing.T) {
 }
 
 func TestAuthenticateClient(t *testing.T) {
-	env := loadDotEnv(t)
 	reg := newClientRegistry()
 
 	cases := []struct {
@@ -70,18 +40,18 @@ func TestAuthenticateClient(t *testing.T) {
 		secret string
 		ok     bool
 	}{
-		{"client1 correct secret", "client1", env["SECRET1"], true},
-		{"client2 correct secret", "client2", env["SECRET2"], true},
-		{"client3 correct secret", "client3", env["SECRET3"], true},
+		{"client1 correct secret", "client1", os.Getenv("SECRET1"), true},
+		{"client2 correct secret", "client2", os.Getenv("SECRET2"), true},
+		{"client3 correct secret", "client3", os.Getenv("SECRET3"), true},
 		{"client2 wrong secret", "client2", "wrong", false},
 		{"client2 empty secret", "client2", "", false},
-		{"client2 with client1's secret", "client2", env["SECRET1"], false},
-		{"client3 with client2's secret", "client3", env["SECRET2"], false},
-		{"client2 secret sent as its hash", "client2", env["SECRET2_HASH"], false},
+		{"client2 with client1's secret", "client2", os.Getenv("SECRET1"), false},
+		{"client3 with client2's secret", "client3", os.Getenv("SECRET2"), false},
+		{"client2 secret sent as its hash", "client2", os.Getenv("SECRET2_HASH"), false},
 		{"unknown id", "client4", "wrong", false},
-		{"unknown id with a valid secret", "client4", env["SECRET2"], false},
-		{"id wrong case", "CLIENT2", env["SECRET2"], false},
-		{"empty id", "", env["SECRET2"], false},
+		{"unknown id with a valid secret", "client4", os.Getenv("SECRET2"), false},
+		{"id wrong case", "CLIENT2", os.Getenv("SECRET2"), false},
+		{"empty id", "", os.Getenv("SECRET2"), false},
 		{"empty id and secret", "", "", false},
 	}
 	for _, c := range cases {
@@ -101,7 +71,6 @@ func TestAuthenticateClient(t *testing.T) {
 }
 
 func TestRegistryGrantTypes(t *testing.T) {
-	loadDotEnv(t)
 	reg := newClientRegistry()
 
 	cases := []struct {
@@ -124,7 +93,6 @@ func TestRegistryGrantTypes(t *testing.T) {
 }
 
 func TestRegistryScopes(t *testing.T) {
-	loadDotEnv(t)
 	reg := newClientRegistry()
 
 	// Each requested scope list must be fully allowed (reject, don't narrow).

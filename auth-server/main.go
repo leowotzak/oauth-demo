@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // server holds everything the HTTP handlers need.
@@ -30,6 +32,14 @@ func (s *server) routes() http.Handler {
 }
 
 func main() {
+	// Load the client secret hashes from .env in the current directory.
+	// If it's missing, carry on: the variables may already be set, and
+	// mustGetenv stops the server with a clear message if they aren't.
+	// godotenv.Load doesn't override variables that are already set.
+	if err := godotenv.Load(); err != nil {
+		log.Printf("not loading .env: %v", err)
+	}
+
 	s := newServer()
 	for id := range s.clients {
 		log.Printf("registered client %s", id)

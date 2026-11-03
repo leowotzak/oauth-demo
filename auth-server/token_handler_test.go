@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -41,14 +42,8 @@ func doTokenRequest(t *testing.T, s *server, req tokenRequest) *httptest.Respons
 	return w
 }
 
-func newTestServer(t *testing.T) (*server, map[string]string) {
-	t.Helper()
-	env := loadDotEnv(t)
-	return newServer(), env
-}
-
 func TestTokenEndpointSuccess(t *testing.T) {
-	s, env := newTestServer(t)
+	s := newServer()
 
 	cases := []struct {
 		name      string
@@ -56,25 +51,25 @@ func TestTokenEndpointSuccess(t *testing.T) {
 		wantScope string
 	}{
 		{"basic auth, scope omitted → defaults",
-			tokenRequest{basicID: "client2", basicSecret: env["SECRET2"], body: "grant_type=client_credentials"},
+			tokenRequest{basicID: "client2", basicSecret: os.Getenv("SECRET2"), body: "grant_type=client_credentials"},
 			"notes:read"},
 		{"basic auth, explicit scope",
-			tokenRequest{basicID: "client2", basicSecret: env["SECRET2"], body: "grant_type=client_credentials&scope=notes:read"},
+			tokenRequest{basicID: "client2", basicSecret: os.Getenv("SECRET2"), body: "grant_type=client_credentials&scope=notes:read"},
 			"notes:read"},
 		{"credentials in body",
-			tokenRequest{body: "grant_type=client_credentials&client_id=client2&client_secret=" + url.QueryEscape(env["SECRET2"])},
+			tokenRequest{body: "grant_type=client_credentials&client_id=client2&client_secret=" + url.QueryEscape(os.Getenv("SECRET2"))},
 			"notes:read"},
 		{"several scopes",
-			tokenRequest{basicID: "client3", basicSecret: env["SECRET3"], body: "grant_type=client_credentials&scope=notes:read+notes:write+metrics:read"},
+			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read+notes:write+metrics:read"},
 			"notes:read notes:write metrics:read"},
 		{"duplicate scope is dropped",
-			tokenRequest{basicID: "client3", basicSecret: env["SECRET3"], body: "grant_type=client_credentials&scope=notes:read%20notes:read"},
+			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read%20notes:read"},
 			"notes:read"},
 		{"client3 default is narrower than allowed",
-			tokenRequest{basicID: "client3", basicSecret: env["SECRET3"], body: "grant_type=client_credentials"},
+			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials"},
 			"notes:read"},
 		{"content type with charset",
-			tokenRequest{basicID: "client2", basicSecret: env["SECRET2"], contentType: "application/x-www-form-urlencoded; charset=UTF-8", body: "grant_type=client_credentials"},
+			tokenRequest{basicID: "client2", basicSecret: os.Getenv("SECRET2"), contentType: "application/x-www-form-urlencoded; charset=UTF-8", body: "grant_type=client_credentials"},
 			"notes:read"},
 	}
 	for _, c := range cases {
@@ -120,8 +115,8 @@ func TestTokenEndpointSuccess(t *testing.T) {
 }
 
 func TestTokenEndpointErrors(t *testing.T) {
-	s, env := newTestServer(t)
-	s2 := env["SECRET2"]
+	s := newServer()
+	s2 := os.Getenv("SECRET2")
 
 	cases := []struct {
 		name       string
@@ -172,13 +167,13 @@ func TestTokenEndpointErrors(t *testing.T) {
 			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=Client_Credentials"},
 			400, errUnsupportedGrantType},
 		{"client not allowed client_credentials",
-			tokenRequest{basicID: "client1", basicSecret: env["SECRET1"], body: "grant_type=client_credentials"},
+			tokenRequest{basicID: "client1", basicSecret: os.Getenv("SECRET1"), body: "grant_type=client_credentials"},
 			400, errUnauthorizedClient},
 		{"client2 not allowed authorization_code",
 			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=authorization_code"},
 			400, errUnauthorizedClient},
 		{"allowed but not implemented yet",
-			tokenRequest{basicID: "client1", basicSecret: env["SECRET1"], body: "grant_type=authorization_code"},
+			tokenRequest{basicID: "client1", basicSecret: os.Getenv("SECRET1"), body: "grant_type=authorization_code"},
 			400, errUnsupportedGrantType},
 
 		// Scope
@@ -189,7 +184,7 @@ func TestTokenEndpointErrors(t *testing.T) {
 			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=NOTES:READ"},
 			400, errInvalidScope},
 		{"one bad scope fails the lot",
-			tokenRequest{basicID: "client3", basicSecret: env["SECRET3"], body: "grant_type=client_credentials&scope=notes:read+notes:delete"},
+			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read+notes:delete"},
 			400, errInvalidScope},
 		{"wrong resource",
 			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=metrics:read"},
@@ -198,7 +193,7 @@ func TestTokenEndpointErrors(t *testing.T) {
 			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope="},
 			400, errInvalidScope},
 		{"double space in scope",
-			tokenRequest{basicID: "client3", basicSecret: env["SECRET3"], body: "grant_type=client_credentials&scope=notes:read%20%20notes:write"},
+			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read%20%20notes:write"},
 			400, errInvalidScope},
 		{"trailing space in scope",
 			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=notes:read%20"},
@@ -239,8 +234,8 @@ func TestTokenEndpointErrors(t *testing.T) {
 // RFC 6749 §2.3.1: the client ID and secret are form-urlencoded before
 // Basic encoding. Build the header by hand to check the server decodes it.
 func TestTokenEndpointBasicAuthIsURLDecoded(t *testing.T) {
-	s, env := newTestServer(t)
-	creds := url.QueryEscape("client2") + ":" + url.QueryEscape(env["SECRET2"])
+	s := newServer()
+	creds := url.QueryEscape("client2") + ":" + url.QueryEscape(os.Getenv("SECRET2"))
 
 	r := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader("grant_type=client_credentials"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")

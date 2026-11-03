@@ -73,7 +73,7 @@ func createClientRecord(id string, secretHash string, allowedGrantTypes, allowed
 func mustGetenv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		log.Fatalf("missing environment variable %s (did you `set -a; source .env; set +a`?)", key)
+		log.Fatalf("missing environment variable %s (is it in .env, and are you running from the auth-server folder?)", key)
 	}
 	return v
 }

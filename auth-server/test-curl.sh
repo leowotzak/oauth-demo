@@ -2,7 +2,7 @@
 # curl test suite for the auth server's POST /token endpoint.
 #
 # Usage:
-#   go run .            # in another terminal (after: set -a; source .env; set +a)
+#   go run .            # in another terminal
 #   ./test-curl.sh      # runs every case and prints PASS/FAIL
 #
 # Each case is one curl command. To try one by hand, copy the curl part and

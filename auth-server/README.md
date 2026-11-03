@@ -1,6 +1,6 @@
 # auth-server
 
-A hand-written OAuth 2.0 authorization server in Go, built to learn the protocol. It uses only the standard library. No OAuth libraries.
+A hand-written OAuth 2.0 authorization server in Go, built to learn the protocol. No OAuth libraries: the only dependency is [godotenv](https://github.com/joho/godotenv), for loading `.env`.
 
 So far it implements the **client credentials grant** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a machine client authenticates at `POST /token` and receives an access token.
 
@@ -9,8 +9,7 @@ So far it implements the **client credentials grant** ([RFC 6749 §4.4](https://
 ## Running it
 
 ```sh
-set -a; source .env; set +a   # load the client secret hashes
-go run .                      # listens on http://localhost:8080
+go run .                      # loads .env, listens on http://localhost:8080
 
 curl -u "client2:$SECRET2" -d grant_type=client_credentials localhost:8080/token
 # {"access_token":"…","token_type":"Bearer","expires_in":3600,"scope":"notes:read"}
