@@ -22,7 +22,8 @@ go test ./...                 # tests read .env themselves
 
 | File | Contents |
 |---|---|
-| `main.go` | Client registry, `authenticateClient`, the `server` struct and routing |
+| `main.go` | The `server` struct, routing and startup |
+| `clients.go` | Client registry and `authenticateClient` |
 | `secrets.go` | Generating random secrets and hashing them |
 | `tokens.go` | The access token store |
 | `token_handler.go` | The `POST /token` handler |
