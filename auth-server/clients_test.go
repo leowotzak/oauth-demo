@@ -32,3 +32,32 @@ func TestAuthenticateClient(t *testing.T) {
 		})
 	}
 }
+
+func TestAllowsRedirect(t *testing.T) {
+	client1 := newClientRegistry()["client1"]
+
+	cases := []struct {
+		uri     string
+		allowed bool
+	}{
+		{"http://localhost:9000/callback", true},
+		{"http://localhost:9000/callback/", false},          // trailing slash
+		{"http://localhost:9000/callback?next=evil", false}, // extra query
+		{"http://localhost:9000/callback/../steal", false},  // path tricks
+		{"http://localhost:9000/callback.evil.com", false},  // a prefix match would allow this
+		{"http://localhost:9001/callback", false},           // different port
+		{"https://localhost:9000/callback", false},          // different scheme
+		{"HTTP://LOCALHOST:9000/callback", false},           // exact string, no normalizing
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := client1.allowsRedirect(c.uri); got != c.allowed {
+			t.Errorf("allowsRedirect(%q) = %v, want %v", c.uri, got, c.allowed)
+		}
+	}
+
+	// Clients without registered URIs can't use /authorize at all.
+	if newClientRegistry()["client2"].allowsRedirect("http://localhost:9000/callback") {
+		t.Error("client2 has no redirect URIs but allowed one")
+	}
+}

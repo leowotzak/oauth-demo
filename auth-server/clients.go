@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 )
 
 // ClientRecord is what the server knows about a registered client.
@@ -14,6 +15,14 @@ type ClientRecord struct {
 	grantTypes    []string // grant_type values this client may use
 	scopes        []string // scopes this client may be granted (case-sensitive)
 	defaultScopes []string // granted when a request omits scope (RFC 6749 §3.3)
+	redirectURIs  []string // where /authorize may send codes (authorization code flow)
+}
+
+// allowsRedirect reports whether a redirect URI is registered for this client.
+// Exact string match only: the code is the user's grant, and any looser
+// matching (prefixes, patterns) lets attackers send it somewhere they control.
+func (c *ClientRecord) allowsRedirect(uri string) bool {
+	return slices.Contains(c.redirectURIs, uri)
 }
 
 // mustGetenv returns an environment variable, or stops the server if it's missing.
@@ -29,13 +38,15 @@ func mustGetenv(key string) string {
 // The secret hashes come from .env.
 func newClientRegistry() map[string]*ClientRecord {
 	return map[string]*ClientRecord{
-		// Not allowed client_credentials: tests unauthorized_client.
+		// A web app that acts for users (authorization code flow). Not allowed
+		// client_credentials: tests unauthorized_client.
 		"client1": {
 			id:            "client1",
 			secretHash:    mustGetenv("SECRET1_HASH"),
 			grantTypes:    []string{"authorization_code"},
 			scopes:        []string{"notes:read", "notes:write"},
 			defaultScopes: []string{"notes:read"},
+			redirectURIs:  []string{"http://localhost:9000/callback"},
 		},
 		// The basic client_credentials client.
 		"client2": {
