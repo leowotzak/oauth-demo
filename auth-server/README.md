@@ -2,7 +2,7 @@
 
 A hand-written OAuth 2.0 authorization server in Go, built to learn the protocol. No OAuth libraries: the only dependency is [godotenv](https://github.com/joho/godotenv), for loading `.env`.
 
-So far it implements the **client credentials grant** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a machine client authenticates at `POST /token` and receives an access token.
+So far it implements the **client credentials grant** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a machine client authenticates at `POST /token` and receives an access token. Resource servers, such as [`resource-server`](../resource-server), check those tokens at `POST /introspect` ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)).
 
 > **Tutorial only.** Plaintext client secrets are stored in `.env`, the server uses plain HTTP, and tokens are kept in memory. None of this is suitable for production.
 
@@ -27,6 +27,7 @@ go test ./...                 # tests read .env themselves
 | `secrets.go` | Generating random secrets and hashing them |
 | `tokens.go` | The access token store |
 | `token_handler.go` | The `POST /token` handler |
+| `introspect_handler.go` | The `POST /introspect` handler |
 | `errors.go` | OAuth error responses |
 | `.env` | Client secrets and hashes (tutorial only, never commit it) |
 
@@ -40,6 +41,7 @@ Every client has an ID, a secret hash, allowed grant types, allowed scopes and d
 | `client1` | `authorization_code` | `notes:read notes:write` | `notes:read` | `unauthorized_client` |
 | `client2` | `client_credentials` | `notes:read` | `notes:read` | The basic success case |
 | `client3` | `client_credentials` | `notes:read notes:write metrics:read` | `notes:read` | Requests with several scopes |
+| `notes-api` | none | none | none | The resource server. It can call `/introspect` but can't get tokens |
 
 - Scopes use `resource:action` names and are case-sensitive (§3.3). They limit what the **client** can do, not what the user can do.
 - Default scopes are narrower than the allowed ones, so a client has to ask explicitly for its more powerful scopes.
@@ -68,10 +70,17 @@ Parameters are read from the form-encoded body only; the query string is ignored
 
 Left out to keep the demo simple: rejecting repeated parameters, rejecting Basic and body credentials together, and URL-decoding Basic credentials (§2.3.1).
 
+### 6. `POST /introspect`
+Resource servers send `token=<access token>` and get back whether it's usable (RFC 7662):
+
+1. **The caller must authenticate** as a registered client, or anyone could probe tokens. Any client may call it here; a real server would allow only resource servers.
+2. **A missing `token`** returns `invalid_request`.
+3. **An active token** returns `{"active":true,"scope":…,"client_id":…,"token_type":"Bearer","exp":…}`.
+4. **An unknown or expired token** returns just `{"active":false}` with 200 OK, so the caller learns nothing about why.
+
 ## Next steps
-1. A resource server that accepts these tokens as `Authorization: Bearer` (RFC 6750)
-2. The authorization code flow: users, login, consent and redirects
-3. PKCE (RFC 7636)
-4. Refresh tokens with rotation
-5. Introspection, revocation and metadata endpoints
-6. JWT access tokens (optional)
+1. The authorization code flow: users, login, consent and redirects
+2. PKCE (RFC 7636)
+3. Refresh tokens with rotation
+4. Revocation and metadata endpoints
+5. JWT access tokens (optional), so resource servers can check tokens without calling `/introspect`
