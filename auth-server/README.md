@@ -16,6 +16,7 @@ curl -u "client2:$SECRET2" -d grant_type=client_credentials localhost:8080/token
 # {"access_token":"…","token_type":"Bearer","expires_in":3600,"scope":"notes:read"}
 
 go test ./...                 # tests read .env themselves
+./test-curl.sh                # curl suite against the running server
 ```
 
 ## Files
