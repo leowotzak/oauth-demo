@@ -11,6 +11,7 @@ import (
 // server holds everything the HTTP handlers need.
 type server struct {
 	clients  map[string]*ClientRecord
+	users    map[string]*User
 	tokens   *TokenStore
 	tokenTTL time.Duration
 }
@@ -18,6 +19,7 @@ type server struct {
 func newServer() *server {
 	return &server{
 		clients:  newClientRegistry(),
+		users:    newUserRegistry(),
 		tokens:   newTokenStore(),
 		tokenTTL: time.Hour,
 	}
