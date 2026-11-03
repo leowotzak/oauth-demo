@@ -23,7 +23,8 @@ go test ./...                 # tests read .env themselves
 | File | Contents |
 |---|---|
 | `main.go` | The `server` struct, routing and startup |
-| `clients.go` | Client registry and `authenticateClient` |
+| `clients.go` | Client registry, `authenticateClient` and redirect URI checks |
+| `users.go` | Demo users and `authenticateUser` (for the authorization code flow) |
 | `secrets.go` | Generating random secrets and hashing them |
 | `tokens.go` | The access token store |
 | `token_handler.go` | The `POST /token` handler |
@@ -78,8 +79,12 @@ Resource servers send `token=<access token>` and get back whether it's usable (R
 3. **An active token** returns `{"active":true,"scope":…,"client_id":…,"token_type":"Bearer","exp":…}`.
 4. **An unknown or expired token** returns just `{"active":false}` with 200 OK, so the caller learns nothing about why.
 
+### 7. Groundwork for the authorization code flow
+- **Users:** `alice` and `bob`, who will log in on the authorization page. Their passwords are stored as **bcrypt** hashes, not SHA-256: people choose guessable passwords, so the hash must be slow and salted. (In `.env`, the hashes are single-quoted because they contain `$`.)
+- **Redirect URIs:** `client1` registers `http://localhost:9000/callback`. `allowsRedirect` uses an exact string match only, because the authorization code is sent there, and looser matching lets attackers redirect it to themselves.
+
 ## Next steps
-1. The authorization code flow: users, login, consent and redirects
+1. The rest of the authorization code flow: `GET`/`POST /authorize` (login and consent), then exchanging the code at `/token`
 2. PKCE (RFC 7636)
 3. Refresh tokens with rotation
 4. Revocation and metadata endpoints
