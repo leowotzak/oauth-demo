@@ -24,12 +24,8 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	form := r.PostForm
 
-	// 1. Authenticate the client: HTTP Basic, or client_id/client_secret in
-	//    the body (§2.3.1).
-	id, secret, ok := r.BasicAuth()
-	if !ok {
-		id, secret = form.Get("client_id"), form.Get("client_secret")
-	}
+	// 1. Authenticate the client.
+	id, secret := clientCredentials(r)
 	client, ok := authenticateClient(s.clients, id, secret)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errInvalidClient, "client authentication failed")

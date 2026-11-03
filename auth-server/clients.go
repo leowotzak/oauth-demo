@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/subtle"
 	"log"
+	"net/http"
 	"os"
 )
 
@@ -53,6 +54,16 @@ func newClientRegistry() map[string]*ClientRecord {
 			defaultScopes: []string{"notes:read"},
 		},
 	}
+}
+
+// clientCredentials reads the client ID and secret from HTTP Basic auth, or
+// from client_id/client_secret in the body (RFC 6749 §2.3.1).
+func clientCredentials(r *http.Request) (id, secret string) {
+	id, secret, ok := r.BasicAuth()
+	if !ok {
+		id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+	}
+	return id, secret
 }
 
 // authenticateClient checks a client ID and secret against the registry.
