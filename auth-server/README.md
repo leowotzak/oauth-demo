@@ -43,14 +43,14 @@ Every client has an ID, a secret hash, allowed grant types, allowed scopes and d
 
 - Scopes use `resource:action` names and are case-sensitive (§3.3). They limit what the **client** can do, not what the user can do.
 - Default scopes are narrower than the allowed ones, so a client has to ask explicitly for its more powerful scopes.
-- The constructor doesn't validate its input, to keep the code short. A real server would reject bad configuration at startup.
+- The registry is a plain map literal with no validation, to keep the code short. A real server would reject bad configuration at startup.
 
 ### 2. Client secrets
 - Secrets are 256 random bits from `crypto/rand`, encoded as base64url. §10.10 requires at least 128 bits, and base64url needs no escaping in headers or form bodies.
 - Only the SHA-256 hash is stored. A fast hash is fine because the secrets are long and random; bcrypt is for human passwords.
 
 ### 3. Client authentication
-`authenticateClient` hashes the secret a client sends and compares it with `subtle.ConstantTimeCompare`. An unknown ID and a wrong secret return the same failure, and an unknown ID is compared against a dummy hash so the timing doesn't reveal which IDs exist.
+`authenticateClient` hashes the secret a client sends and compares it with `subtle.ConstantTimeCompare`. An unknown ID and a wrong secret return the same failure.
 
 ### 4. Token store
 - Tokens are opaque random strings. No JWTs yet, so no signing keys are needed.
@@ -59,13 +59,14 @@ Every client has an ID, a secret hash, allowed grant types, allowed scopes and d
 - The store is protected by a mutex because requests run concurrently.
 
 ### 5. `POST /token`
-The checks run in a fixed order, and each kind of failure has its own error (§5.2):
+Parameters are read from the form-encoded body only; the query string is ignored. The checks run in order, and each kind of failure has its own error (§5.2):
 
-1. **Request format:** the body must be form-encoded and is read from the body only (query strings are ignored). Repeated parameters are rejected. Failures return `invalid_request`.
-2. **Client authentication:** Basic auth (URL-decoded, per §2.3.1) or `client_id`/`client_secret` in the body, but not both. Failures return `invalid_client` with status 401.
-3. **Grant type:** a missing one returns `invalid_request`, an unknown one `unsupported_grant_type`, and one the client isn't allowed `unauthorized_client`.
-4. **Scope:** an omitted scope uses the client's defaults. Duplicates are removed. Empty entries or any scope the client isn't allowed reject the whole request with `invalid_scope`; it isn't silently narrowed.
-5. **Issue the token:** the response includes `scope` and no refresh token (§4.4.3). Every response has `Cache-Control: no-store`.
+1. **Client authentication:** Basic auth, or `client_id`/`client_secret` in the body. Failures return `invalid_client` with status 401.
+2. **Grant type:** a missing one returns `invalid_request`, anything other than `client_credentials` returns `unsupported_grant_type`, and a client that isn't allowed it gets `unauthorized_client`.
+3. **Scope:** an omitted scope uses the client's defaults. Any scope the client isn't allowed rejects the whole request with `invalid_scope`; it isn't silently narrowed.
+4. **Issue the token:** the response includes `scope` and no refresh token (§4.4.3). Every response has `Cache-Control: no-store`.
+
+Left out to keep the demo simple: rejecting repeated parameters, rejecting Basic and body credentials together, and URL-decoding Basic credentials (§2.3.1).
 
 ## Next steps
 1. A resource server that accepts these tokens as `Authorization: Bearer` (RFC 6750)

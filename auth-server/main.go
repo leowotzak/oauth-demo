@@ -32,10 +32,7 @@ func (s *server) routes() http.Handler {
 }
 
 func main() {
-	// Load the client secret hashes from .env in the current directory.
-	// If it's missing, carry on: the variables may already be set, and
-	// mustGetenv stops the server with a clear message if they aren't.
-	// godotenv.Load doesn't override variables that are already set.
+	// Load the client secrets from .env. Variables already set win.
 	if err := godotenv.Load(); err != nil {
 		log.Printf("not loading .env: %v", err)
 	}
@@ -45,8 +42,7 @@ func main() {
 		log.Printf("registered client %s", id)
 	}
 
-	// Plain HTTP is fine on localhost for this tutorial. RFC 6749 requires
-	// TLS for every endpoint in a real deployment.
+	// Plain HTTP for the tutorial; RFC 6749 requires TLS in real deployments.
 	addr := "localhost:8080"
 	log.Printf("auth server listening on http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, s.routes()))

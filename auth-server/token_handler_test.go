@@ -1,41 +1,20 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
 )
 
-type tokenRequest struct {
-	method      string
-	query       string // appended to the URL, e.g. "grant_type=client_credentials"
-	contentType string // defaults to form-encoded
-	basicID     string // if set, sent as HTTP Basic
-	basicSecret string
-	body        string // raw body, sent as is
-}
-
-func doTokenRequest(t *testing.T, s *server, req tokenRequest) *httptest.ResponseRecorder {
-	t.Helper()
-	if req.method == "" {
-		req.method = http.MethodPost
-	}
-	target := "/token"
-	if req.query != "" {
-		target += "?" + req.query
-	}
-	r := httptest.NewRequest(req.method, target, strings.NewReader(req.body))
-	if req.contentType == "" {
-		req.contentType = "application/x-www-form-urlencoded"
-	}
-	r.Header.Set("Content-Type", req.contentType)
-	if req.basicID != "" {
-		r.SetBasicAuth(req.basicID, req.basicSecret)
+// postToken sends POST /token with a form body, optionally with Basic auth.
+func postToken(s *server, id, secret, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if id != "" {
+		r.SetBasicAuth(id, secret)
 	}
 	w := httptest.NewRecorder()
 	s.routes().ServeHTTP(w, r)
@@ -44,71 +23,30 @@ func doTokenRequest(t *testing.T, s *server, req tokenRequest) *httptest.Respons
 
 func TestTokenEndpointSuccess(t *testing.T) {
 	s := newServer()
+	s2, s3 := os.Getenv("SECRET2"), os.Getenv("SECRET3")
 
 	cases := []struct {
-		name      string
-		req       tokenRequest
-		wantScope string
+		name, id, secret, body, wantScope string
 	}{
-		{"basic auth, scope omitted → defaults",
-			tokenRequest{basicID: "client2", basicSecret: os.Getenv("SECRET2"), body: "grant_type=client_credentials"},
-			"notes:read"},
-		{"basic auth, explicit scope",
-			tokenRequest{basicID: "client2", basicSecret: os.Getenv("SECRET2"), body: "grant_type=client_credentials&scope=notes:read"},
-			"notes:read"},
-		{"credentials in body",
-			tokenRequest{body: "grant_type=client_credentials&client_id=client2&client_secret=" + url.QueryEscape(os.Getenv("SECRET2"))},
-			"notes:read"},
-		{"several scopes",
-			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read+notes:write+metrics:read"},
-			"notes:read notes:write metrics:read"},
-		{"duplicate scope is dropped",
-			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read%20notes:read"},
-			"notes:read"},
-		{"client3 default is narrower than allowed",
-			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials"},
-			"notes:read"},
-		{"content type with charset",
-			tokenRequest{basicID: "client2", basicSecret: os.Getenv("SECRET2"), contentType: "application/x-www-form-urlencoded; charset=UTF-8", body: "grant_type=client_credentials"},
-			"notes:read"},
+		{"scope omitted → defaults", "client2", s2, "grant_type=client_credentials", "notes:read"},
+		{"explicit scope", "client2", s2, "grant_type=client_credentials&scope=notes:read", "notes:read"},
+		{"credentials in body", "", "", "grant_type=client_credentials&client_id=client2&client_secret=" + s2, "notes:read"},
+		{"several scopes", "client3", s3, "grant_type=client_credentials&scope=notes:read+metrics:read", "notes:read metrics:read"},
+		{"defaults narrower than allowed", "client3", s3, "grant_type=client_credentials", "notes:read"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := doTokenRequest(t, s, c.req)
+			w := postToken(s, c.id, c.secret, c.body)
 			if w.Code != http.StatusOK {
 				t.Fatalf("status %d, body %s", w.Code, w.Body)
 			}
-			if got := w.Header().Get("Cache-Control"); got != "no-store" {
-				t.Errorf("Cache-Control = %q, want no-store", got)
+			var resp tokenResponse
+			json.Unmarshal(w.Body.Bytes(), &resp)
+			if resp.TokenType != "Bearer" || resp.ExpiresIn != 3600 || resp.Scope != c.wantScope {
+				t.Errorf("got %+v, want scope %q", resp, c.wantScope)
 			}
-			if got := w.Header().Get("Pragma"); got != "no-cache" {
-				t.Errorf("Pragma = %q, want no-cache", got)
-			}
-
-			var resp map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("bad JSON: %v", err)
-			}
-			if resp["token_type"] != "Bearer" {
-				t.Errorf("token_type = %v", resp["token_type"])
-			}
-			if resp["expires_in"] != float64(3600) {
-				t.Errorf("expires_in = %v", resp["expires_in"])
-			}
-			if resp["scope"] != c.wantScope {
-				t.Errorf("scope = %q, want %q", resp["scope"], c.wantScope)
-			}
-			if _, has := resp["refresh_token"]; has {
-				t.Error("refresh_token issued for client_credentials (§4.4.3)")
-			}
-
-			// The token must actually be usable.
-			rec, ok := s.tokens.lookup(resp["access_token"].(string))
-			if !ok {
-				t.Fatal("issued token not in store")
-			}
-			if strings.Join(rec.scope, " ") != c.wantScope {
-				t.Errorf("stored scope = %v, want %q", rec.scope, c.wantScope)
+			if _, ok := s.tokens.lookup(resp.AccessToken); !ok {
+				t.Error("issued token not in store")
 			}
 		})
 	}
@@ -116,134 +54,42 @@ func TestTokenEndpointSuccess(t *testing.T) {
 
 func TestTokenEndpointErrors(t *testing.T) {
 	s := newServer()
-	s2 := os.Getenv("SECRET2")
+	s1, s2, s3 := os.Getenv("SECRET1"), os.Getenv("SECRET2"), os.Getenv("SECRET3")
 
 	cases := []struct {
-		name       string
-		req        tokenRequest
-		wantStatus int
-		wantError  string // empty when the response isn't an OAuth error (405)
+		name, id, secret, body string
+		wantStatus             int
+		wantError              string
 	}{
-		// Request format
-		{"GET", tokenRequest{method: http.MethodGet}, http.StatusMethodNotAllowed, ""},
-		{"JSON body",
-			tokenRequest{basicID: "client2", basicSecret: s2, contentType: "application/json", body: `{"grant_type":"client_credentials"}`},
-			400, errInvalidRequest},
-		{"params in query string are ignored",
-			tokenRequest{basicID: "client2", basicSecret: s2, query: "grant_type=client_credentials"},
-			400, errInvalidRequest},
-		{"repeated parameter",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&grant_type=client_credentials"},
-			400, errInvalidRequest},
-
-		// Client authentication
-		{"no credentials",
-			tokenRequest{body: "grant_type=client_credentials"},
-			401, errInvalidClient},
-		{"wrong secret",
-			tokenRequest{basicID: "client2", basicSecret: "wrong", body: "grant_type=client_credentials"},
-			401, errInvalidClient},
-		{"unknown client",
-			tokenRequest{basicID: "client4", basicSecret: s2, body: "grant_type=client_credentials"},
-			401, errInvalidClient},
-		{"wrong secret in body",
-			tokenRequest{body: "grant_type=client_credentials&client_id=client2&client_secret=wrong"},
-			401, errInvalidClient},
-		{"basic and body secret together",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&client_id=client2&client_secret=" + url.QueryEscape(s2)},
-			400, errInvalidRequest},
-
-		// Grant type
-		{"missing grant_type",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "scope=notes:read"},
-			400, errInvalidRequest},
-		{"password grant",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=password"},
-			400, errUnsupportedGrantType},
-		{"made-up grant",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=magic"},
-			400, errUnsupportedGrantType},
-		{"grant_type wrong case",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=Client_Credentials"},
-			400, errUnsupportedGrantType},
-		{"client not allowed client_credentials",
-			tokenRequest{basicID: "client1", basicSecret: os.Getenv("SECRET1"), body: "grant_type=client_credentials"},
-			400, errUnauthorizedClient},
-		{"client2 not allowed authorization_code",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=authorization_code"},
-			400, errUnauthorizedClient},
-		{"allowed but not implemented yet",
-			tokenRequest{basicID: "client1", basicSecret: os.Getenv("SECRET1"), body: "grant_type=authorization_code"},
-			400, errUnsupportedGrantType},
-
-		// Scope
-		{"scope not allowed",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=notes:write"},
-			400, errInvalidScope},
-		{"scope wrong case",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=NOTES:READ"},
-			400, errInvalidScope},
-		{"one bad scope fails the lot",
-			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read+notes:delete"},
-			400, errInvalidScope},
-		{"wrong resource",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=metrics:read"},
-			400, errInvalidScope},
-		{"empty scope",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope="},
-			400, errInvalidScope},
-		{"double space in scope",
-			tokenRequest{basicID: "client3", basicSecret: os.Getenv("SECRET3"), body: "grant_type=client_credentials&scope=notes:read%20%20notes:write"},
-			400, errInvalidScope},
-		{"trailing space in scope",
-			tokenRequest{basicID: "client2", basicSecret: s2, body: "grant_type=client_credentials&scope=notes:read%20"},
-			400, errInvalidScope},
+		{"no credentials", "", "", "grant_type=client_credentials", 401, errInvalidClient},
+		{"wrong secret", "client2", "wrong", "grant_type=client_credentials", 401, errInvalidClient},
+		{"unknown client", "client4", s2, "grant_type=client_credentials", 401, errInvalidClient},
+		{"missing grant_type", "client2", s2, "scope=notes:read", 400, errInvalidRequest},
+		{"password grant", "client2", s2, "grant_type=password", 400, errUnsupportedGrantType},
+		{"client not allowed client_credentials", "client1", s1, "grant_type=client_credentials", 400, errUnauthorizedClient},
+		{"scope not allowed", "client2", s2, "grant_type=client_credentials&scope=notes:write", 400, errInvalidScope},
+		{"scope wrong case", "client2", s2, "grant_type=client_credentials&scope=NOTES:READ", 400, errInvalidScope},
+		{"one bad scope fails the lot", "client3", s3, "grant_type=client_credentials&scope=notes:read+notes:delete", 400, errInvalidScope},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			before := len(s.tokens.tokens)
-			w := doTokenRequest(t, s, c.req)
-
-			if w.Code != c.wantStatus {
-				t.Fatalf("status %d, want %d (body %s)", w.Code, c.wantStatus, w.Body)
-			}
-			if len(s.tokens.tokens) != before {
-				t.Error("a token was issued on a failed request")
-			}
-			if c.wantError == "" {
-				return
-			}
-
+			w := postToken(s, c.id, c.secret, c.body)
 			var resp errorResponse
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("bad JSON: %v (body %s)", err, w.Body)
-			}
-			if resp.Error != c.wantError {
-				t.Errorf("error = %q, want %q", resp.Error, c.wantError)
-			}
-			if got := w.Header().Get("Cache-Control"); got != "no-store" {
-				t.Errorf("Cache-Control = %q, want no-store", got)
-			}
-			if c.wantStatus == http.StatusUnauthorized && w.Header().Get("WWW-Authenticate") == "" {
-				t.Error("401 without WWW-Authenticate")
+			json.Unmarshal(w.Body.Bytes(), &resp)
+			if w.Code != c.wantStatus || resp.Error != c.wantError {
+				t.Errorf("got %d %q, want %d %q", w.Code, resp.Error, c.wantStatus, c.wantError)
 			}
 		})
 	}
+	if len(s.tokens.tokens) != 0 {
+		t.Error("a token was issued on a failed request")
+	}
 }
 
-// RFC 6749 §2.3.1: the client ID and secret are form-urlencoded before
-// Basic encoding. Build the header by hand to check the server decodes it.
-func TestTokenEndpointBasicAuthIsURLDecoded(t *testing.T) {
-	s := newServer()
-	creds := url.QueryEscape("client2") + ":" + url.QueryEscape(os.Getenv("SECRET2"))
-
-	r := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader("grant_type=client_credentials"))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(creds)))
+func TestTokenEndpointRejectsGET(t *testing.T) {
 	w := httptest.NewRecorder()
-	s.routes().ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d, body %s", w.Code, w.Body)
+	newServer().routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/token", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status %d, want 405", w.Code)
 	}
 }

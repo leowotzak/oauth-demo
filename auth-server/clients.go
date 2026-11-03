@@ -6,70 +6,16 @@ import (
 	"os"
 )
 
-// Each field answers a question the server will ask while handling a request.
+// ClientRecord is what the server knows about a registered client.
 type ClientRecord struct {
-	// The unique identifier for the client. It's public and appears in URLs,
-	// so it isn't a secret. Should be unique and stable, random strings or
-	// readable slugs both work.
-	id string
-
-	// Lets you verify a confidential client. Store a hash, never
-	// the plaintext
-	secretHash string
-
-	// List of grant_type values client may use at /token
-	// Ex.) "authorization_code", "client_credentials", "refresh_token"
-	allowedGrantTypes map[string]bool
-
-	// Individual scope names this client may be granted. Each scope is a label
-	// for a set of permissions. Scopes are case-sensitive (RFC 6749 §3.3).
-	// Requests send them as one space-separated string; split it before
-	// checking each name against this set.
-	// Scopes limit the client, not the user.
-	// Flat scopes: "read", "write", "admin"
-	// Resource scopes: "notes:read", "notes:write", "metrics:read"
-	allowedScopes map[string]bool
-
-	// Scopes granted when a token request omits the scope parameter
-	// (RFC 6749 §3.3: use a pre-defined default or fail). Should be a non-empty
-	// subset of allowedScopes. Keep it narrower than allowedScopes so
-	// powerful scopes must be asked for explicitly.
-	defaultScopes []string
+	id            string   // public identifier, sent with every request
+	secretHash    string   // SHA-256 of the client secret; never store the plaintext
+	grantTypes    []string // grant_type values this client may use
+	scopes        []string // scopes this client may be granted (case-sensitive)
+	defaultScopes []string // granted when a request omits scope (RFC 6749 §3.3)
 }
 
-// knownGrantTypes are the grant_type values this server understands.
-// /token returns unsupported_grant_type for anything else.
-var knownGrantTypes = map[string]bool{
-	"authorization_code": true,
-	"client_credentials": true,
-	"refresh_token":      true,
-}
-
-// createClientRecord builds a client's record. It doesn't validate its input;
-// a production server would reject bad configuration here.
-func createClientRecord(id string, secretHash string, allowedGrantTypes, allowedScopes, defaultScopes []string) *ClientRecord {
-	grantTypes := make(map[string]bool)
-	for _, gt := range allowedGrantTypes {
-		grantTypes[gt] = true
-	}
-
-	scopes := make(map[string]bool)
-	for _, s := range allowedScopes {
-		scopes[s] = true
-	}
-
-	return &ClientRecord{
-		id:                id,
-		secretHash:        secretHash,
-		allowedGrantTypes: grantTypes,
-		allowedScopes:     scopes,
-		defaultScopes:     defaultScopes,
-	}
-}
-
-// mustGetenv returns the value of an environment variable, or stops the
-// server if it's missing. A client with an empty secret hash must never be
-// registered, so failing at startup is safer than continuing.
+// mustGetenv returns an environment variable, or stops the server if it's missing.
 func mustGetenv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
@@ -78,35 +24,43 @@ func mustGetenv(key string) string {
 	return v
 }
 
-// newClientRegistry builds the registry from the secret hashes in the
-// environment. It's separate from main so tests can build the same registry.
+// newClientRegistry returns the registered clients, keyed by ID.
+// The secret hashes come from .env.
 func newClientRegistry() map[string]*ClientRecord {
-	client1 := createClientRecord("client1", mustGetenv("SECRET1_HASH"), []string{"authorization_code"}, []string{"notes:read", "notes:write"}, []string{"notes:read"})
-	client2 := createClientRecord("client2", mustGetenv("SECRET2_HASH"), []string{"client_credentials"}, []string{"notes:read"}, []string{"notes:read"})
-	// Machine client with several scopes across two resources, for testing
-	// multi-scope requests and partially-allowed scope lists.
-	client3 := createClientRecord("client3", mustGetenv("SECRET3_HASH"), []string{"client_credentials"}, []string{"notes:read", "notes:write", "metrics:read"}, []string{"notes:read"})
-	// warning: if clientX, and clientY have the same id, one will overwrite the other in the map
-	clientRegistry := map[string]*ClientRecord{
-		client1.id: client1,
-		client2.id: client2,
-		client3.id: client3,
+	return map[string]*ClientRecord{
+		// Not allowed client_credentials: tests unauthorized_client.
+		"client1": {
+			id:            "client1",
+			secretHash:    mustGetenv("SECRET1_HASH"),
+			grantTypes:    []string{"authorization_code"},
+			scopes:        []string{"notes:read", "notes:write"},
+			defaultScopes: []string{"notes:read"},
+		},
+		// The basic client_credentials client.
+		"client2": {
+			id:            "client2",
+			secretHash:    mustGetenv("SECRET2_HASH"),
+			grantTypes:    []string{"client_credentials"},
+			scopes:        []string{"notes:read"},
+			defaultScopes: []string{"notes:read"},
+		},
+		// Several scopes across two resources; defaults narrower than allowed.
+		"client3": {
+			id:            "client3",
+			secretHash:    mustGetenv("SECRET3_HASH"),
+			grantTypes:    []string{"client_credentials"},
+			scopes:        []string{"notes:read", "notes:write", "metrics:read"},
+			defaultScopes: []string{"notes:read"},
+		},
 	}
-	return clientRegistry
 }
 
-func authenticateClient(clientRegistry map[string]*ClientRecord, id, secret string) (*ClientRecord, bool) {
-	presented := hashSecret(secret)
-	client := clientRegistry[id]
-	if client == nil {
-		subtle.ConstantTimeCompare([]byte(presented), []byte(hashSecret("dummy")))
+// authenticateClient checks a client ID and secret against the registry.
+// It compares hashes, never plaintext, in constant time.
+func authenticateClient(clients map[string]*ClientRecord, id, secret string) (*ClientRecord, bool) {
+	client, ok := clients[id]
+	if !ok || subtle.ConstantTimeCompare([]byte(hashSecret(secret)), []byte(client.secretHash)) != 1 {
 		return nil, false
 	}
-
-	match := subtle.ConstantTimeCompare([]byte(presented), []byte(client.secretHash)) == 1
-	if match {
-		return client, true
-	}
-
-	return nil, false
+	return client, true
 }
