@@ -28,6 +28,7 @@ func newServer() *server {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", s.handleToken)
+	mux.HandleFunc("POST /introspect", s.handleIntrospect)
 	return mux
 }
 

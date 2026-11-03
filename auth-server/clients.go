@@ -53,6 +53,12 @@ func newClientRegistry() map[string]*ClientRecord {
 			scopes:        []string{"notes:read", "notes:write", "metrics:read"},
 			defaultScopes: []string{"notes:read"},
 		},
+		// The resource server (notes API). It authenticates to /introspect to
+		// check tokens. No grant types, so it can't get tokens itself.
+		"notes-api": {
+			id:         "notes-api",
+			secretHash: mustGetenv("NOTES_API_SECRET_HASH"),
+		},
 	}
 }
 
