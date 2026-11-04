@@ -29,6 +29,7 @@ go test ./...                 # tests read .env themselves
 | `tokens.go` | The access token store |
 | `token_handler.go` | The `POST /token` handler |
 | `introspect_handler.go` | The `POST /introspect` handler |
+| `authorize_handler.go`, `templates/authorize.html` | `GET /authorize` and its login and consent page |
 | `errors.go` | OAuth error responses |
 | `.env` | Client secrets and hashes (tutorial only, never commit it) |
 
@@ -83,8 +84,25 @@ Resource servers send `token=<access token>` and get back whether it's usable (R
 - **Users:** `alice` and `bob`, who will log in on the authorization page. Their passwords are stored as **bcrypt** hashes, not SHA-256: people choose guessable passwords, so the hash must be slow and salted. (In `.env`, the hashes are single-quoted because they contain `$`.)
 - **Redirect URIs:** `client1` registers `http://localhost:9000/callback`. `allowsRedirect` uses an exact string match only, because the authorization code is sent there, and looser matching lets attackers redirect it to themselves.
 
+### 8. `GET /authorize`
+The client sends the user's browser here to start the authorization code flow (§4.1.1). Checks run in two phases:
+
+1. **Can it safely redirect back?** An unknown `client_id` or an unregistered `redirect_uri` gets a 400 error page and **never a redirect**, or the server would be an open redirector (§4.1.2.1).
+2. **Everything else** goes back to the client as `redirect_uri?error=…&state=…`:
+   - `response_type` other than `code` → `unsupported_response_type`
+   - the client isn't allowed this flow → `unauthorized_client`
+   - a scope it isn't allowed → `invalid_scope`
+   - no PKCE `code_challenge`, or a method other than `S256` → `invalid_request`
+
+A valid request shows a combined login and consent page. The request details travel to `POST /authorize` as hidden form fields, so that handler must check them all again. The page sets `X-Frame-Options: DENY` against clickjacking (§10.13), and `html/template` escapes every value taken from the URL.
+
+Try it in a browser while the server runs:
+```
+http://localhost:8080/authorize?response_type=code&client_id=client1&redirect_uri=http%3A%2F%2Flocalhost%3A9000%2Fcallback&scope=notes%3Aread&state=abc&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256
+```
+
 ## Next steps
-1. The rest of the authorization code flow: `GET`/`POST /authorize` (login and consent), then exchanging the code at `/token`
+1. The rest of the authorization code flow: `POST /authorize` (check the login, issue a single-use code), then exchanging the code at `/token` with the PKCE verifier
 2. PKCE (RFC 7636)
 3. Refresh tokens with rotation
 4. Revocation and metadata endpoints
