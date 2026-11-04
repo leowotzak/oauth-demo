@@ -29,7 +29,8 @@ go test ./...                 # tests read .env themselves
 | `tokens.go` | The access token store |
 | `token_handler.go` | The `POST /token` handler |
 | `introspect_handler.go` | The `POST /introspect` handler |
-| `authorize_handler.go`, `templates/authorize.html` | `GET /authorize` and its login and consent page |
+| `authorize_handler.go`, `templates/authorize.html` | `GET`/`POST /authorize` and the login and consent page |
+| `codes.go` | The authorization code store |
 | `errors.go` | OAuth error responses |
 | `.env` | Client secrets and hashes (tutorial only, never commit it) |
 
@@ -101,8 +102,20 @@ Try it in a browser while the server runs:
 http://localhost:8080/authorize?response_type=code&client_id=client1&redirect_uri=http%3A%2F%2Flocalhost%3A9000%2Fcallback&scope=notes%3Aread&state=abc&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256
 ```
 
+### 9. `POST /authorize`
+The login page posts here when the user presses Allow or Deny.
+
+1. **Check the request again**, with the same two-phase rules as `GET`. The hidden form fields could have been edited, for example to widen the scope or point `redirect_uri` elsewhere.
+2. **Deny** → redirect back with `error=access_denied`. No password needed.
+3. **Wrong username or password** → show the page again with an error and the username filled in. No redirect, so the client learns nothing about failed logins.
+4. **Allow with a correct login** → issue an authorization code and redirect to `redirect_uri?code=…&state=…`.
+
+Each code is 256 random bits, stored under its hash, and valid for **1 minute**. It records the client, the user, the redirect URI, the scope and the PKCE challenge, so `/token` can check all of them, and a `used` flag so it can only be exchanged once.
+
+Left out to keep the demo simple: a CSRF token on the login form, and a login session (users log in on every authorization).
+
 ## Next steps
-1. The rest of the authorization code flow: `POST /authorize` (check the login, issue a single-use code), then exchanging the code at `/token` with the PKCE verifier
+1. Exchange the code at `/token` (`grant_type=authorization_code`): check the client, redirect URI, PKCE verifier, expiry and single use, then issue a token that includes the user
 2. PKCE (RFC 7636)
 3. Refresh tokens with rotation
 4. Revocation and metadata endpoints
