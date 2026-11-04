@@ -47,17 +47,11 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Work out the scope: the client's defaults if omitted, otherwise
-	//    every requested scope must be allowed (§3.3).
-	scope := client.defaultScopes
-	if raw := form.Get("scope"); raw != "" {
-		scope = strings.Fields(raw)
-		for _, sc := range scope {
-			if !slices.Contains(client.scopes, sc) {
-				writeError(w, http.StatusBadRequest, errInvalidScope, "scope "+sc+" is not allowed for this client")
-				return
-			}
-		}
+	// 3. Work out the scope.
+	scope, disallowed := resolveScope(client, form.Get("scope"))
+	if disallowed != "" {
+		writeError(w, http.StatusBadRequest, errInvalidScope, "scope "+disallowed+" is not allowed for this client")
+		return
 	}
 
 	// 4. Issue the token.

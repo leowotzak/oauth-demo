@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 )
 
 // ClientRecord is what the server knows about a registered client.
@@ -23,6 +24,23 @@ type ClientRecord struct {
 // matching (prefixes, patterns) lets attackers send it somewhere they control.
 func (c *ClientRecord) allowsRedirect(uri string) bool {
 	return slices.Contains(c.redirectURIs, uri)
+}
+
+// resolveScope works out which scopes to grant (RFC 6749 §3.3): the client's
+// defaults if raw is empty, otherwise every requested scope, all of which must
+// be allowed. If one isn't, it's returned as disallowed and nothing is granted.
+// Used by both /token and /authorize.
+func resolveScope(c *ClientRecord, raw string) (scope []string, disallowed string) {
+	if raw == "" {
+		return c.defaultScopes, ""
+	}
+	scope = strings.Fields(raw)
+	for _, sc := range scope {
+		if !slices.Contains(c.scopes, sc) {
+			return nil, sc
+		}
+	}
+	return scope, ""
 }
 
 // mustGetenv returns an environment variable, or stops the server if it's missing.
