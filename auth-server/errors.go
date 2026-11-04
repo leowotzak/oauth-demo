@@ -5,13 +5,14 @@ import (
 	"net/http"
 )
 
-// OAuth error codes for the token endpoint (RFC 6749 §5.2).
+// OAuth error codes (RFC 6749 §4.1.2.1 for /authorize, §5.2 for /token).
 const (
-	errInvalidRequest       = "invalid_request"
-	errInvalidClient        = "invalid_client"
-	errUnauthorizedClient   = "unauthorized_client"
-	errUnsupportedGrantType = "unsupported_grant_type"
-	errInvalidScope         = "invalid_scope"
+	errInvalidRequest          = "invalid_request"
+	errInvalidClient           = "invalid_client"
+	errUnauthorizedClient      = "unauthorized_client"
+	errUnsupportedGrantType    = "unsupported_grant_type"
+	errUnsupportedResponseType = "unsupported_response_type"
+	errInvalidScope            = "invalid_scope"
 )
 
 type errorResponse struct {
