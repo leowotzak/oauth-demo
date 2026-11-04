@@ -13,6 +13,7 @@ const (
 	errUnsupportedGrantType    = "unsupported_grant_type"
 	errUnsupportedResponseType = "unsupported_response_type"
 	errInvalidScope            = "invalid_scope"
+	errAccessDenied            = "access_denied"
 )
 
 type errorResponse struct {

@@ -13,7 +13,7 @@ import (
 var templateFS embed.FS
 
 // html/template escapes every value it inserts, which matters here: state,
-// scope and redirect_uri come straight from the URL.
+// scope and redirect_uri come straight from the request.
 var authorizePage = template.Must(template.ParseFS(templateFS, "templates/authorize.html"))
 
 // scopeDescriptions are what the consent page tells the user each scope means.
@@ -23,57 +23,116 @@ var scopeDescriptions = map[string]string{
 	"metrics:read": "Read service metrics",
 }
 
-// handleAuthorize implements GET /authorize, the start of the authorization
-// code flow (RFC 6749 §4.1.1). The client sends the user's browser here; if
-// the request is valid, the user sees a login and consent page.
-func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
+// authorizeRequest is a validated authorization request.
+type authorizeRequest struct {
+	client      *ClientRecord
+	redirectURI string
+	scope       []string
+	state       string
+	challenge   string
+}
 
+// validateAuthorizeRequest checks an authorization request (RFC 6749 §4.1.1).
+// GET checks the URL; POST checks the form again, because hidden form fields
+// can be edited. On failure it has already written the response.
+func (s *server) validateAuthorizeRequest(w http.ResponseWriter, r *http.Request, p url.Values) (*authorizeRequest, bool) {
 	// Phase 1: can we safely redirect back? If the client or redirect URI is
 	// bad, show an error page and NEVER redirect (§4.1.2.1). Otherwise anyone
 	// could use this server to send users to any URL (an open redirect).
-	client, ok := s.clients[q.Get("client_id")]
+	client, ok := s.clients[p.Get("client_id")]
 	if !ok {
 		http.Error(w, "Invalid authorization request: unknown client_id.", http.StatusBadRequest)
-		return
+		return nil, false
 	}
-	redirectURI := q.Get("redirect_uri")
+	redirectURI := p.Get("redirect_uri")
 	if !client.allowsRedirect(redirectURI) {
 		http.Error(w, "Invalid authorization request: redirect_uri is not registered for this client.", http.StatusBadRequest)
-		return
+		return nil, false
 	}
 
 	// Phase 2: the redirect URI is trusted now, so other errors go back to the
 	// client as redirect_uri?error=...&state=...
-	state := q.Get("state")
-	fail := func(code, description string) {
+	state := p.Get("state")
+	fail := func(code, description string) (*authorizeRequest, bool) {
 		redirectWithError(w, r, redirectURI, state, code, description)
+		return nil, false
 	}
 
-	if q.Get("response_type") != "code" {
-		fail(errUnsupportedResponseType, "only response_type=code is supported")
-		return
+	if p.Get("response_type") != "code" {
+		return fail(errUnsupportedResponseType, "only response_type=code is supported")
 	}
 	if !slices.Contains(client.grantTypes, "authorization_code") {
-		fail(errUnauthorizedClient, "client may not use the authorization code flow")
-		return
+		return fail(errUnauthorizedClient, "client may not use the authorization code flow")
 	}
-	scope, disallowed := resolveScope(client, q.Get("scope"))
+	scope, disallowed := resolveScope(client, p.Get("scope"))
 	if disallowed != "" {
-		fail(errInvalidScope, "scope "+disallowed+" is not allowed for this client")
-		return
+		return fail(errInvalidScope, "scope "+disallowed+" is not allowed for this client")
 	}
 	// PKCE is required (RFC 7636, OAuth 2.1). Only S256: "plain" would send
 	// the secret verifier through the browser, which defeats the point.
-	if q.Get("code_challenge") == "" || q.Get("code_challenge_method") != "S256" {
-		fail(errInvalidRequest, "PKCE is required: send code_challenge with code_challenge_method=S256")
+	if p.Get("code_challenge") == "" || p.Get("code_challenge_method") != "S256" {
+		return fail(errInvalidRequest, "PKCE is required: send code_challenge with code_challenge_method=S256")
+	}
+
+	return &authorizeRequest{client, redirectURI, scope, state, p.Get("code_challenge")}, true
+}
+
+// handleAuthorize implements GET /authorize, the start of the authorization
+// code flow. The client sends the user's browser here; if the request is
+// valid, the user sees a login and consent page.
+func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	req, ok := s.validateAuthorizeRequest(w, r, r.URL.Query())
+	if !ok {
+		return
+	}
+	renderAuthorizePage(w, req, "", "")
+}
+
+// handleAuthorizeSubmit implements POST /authorize: the user pressed Allow or
+// Deny on the login page. On Allow with a correct password, it issues an
+// authorization code and sends the browser back to the client (§4.1.2).
+func (s *server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	form := r.PostForm
+
+	// 1. Check the request again: the hidden fields could have been edited.
+	req, ok := s.validateAuthorizeRequest(w, r, form)
+	if !ok {
 		return
 	}
 
-	// Everything checks out: show the login and consent page.
+	// 2. The user said no.
+	if form.Get("decision") != "allow" {
+		redirectWithError(w, r, req.redirectURI, req.state, errAccessDenied, "the user denied access")
+		return
+	}
+
+	// 3. Check who they are. On failure, show the page again so they can
+	//    retry; don't redirect, so the client learns nothing about failed logins.
+	user, ok := authenticateUser(s.users, form.Get("username"), form.Get("password"))
+	if !ok {
+		renderAuthorizePage(w, req, form.Get("username"), "Invalid username or password.")
+		return
+	}
+
+	// 4. Issue a short-lived, single-use code tied to everything /token will
+	//    check, and send the browser back to the client with it.
+	code := s.codes.issue(AuthCode{
+		clientID:    req.client.id,
+		userID:      user.id,
+		redirectURI: req.redirectURI,
+		scope:       req.scope,
+		challenge:   req.challenge,
+	}, s.codeTTL)
+	redirectWithParams(w, r, req.redirectURI, url.Values{"code": {code}}, req.state)
+}
+
+// renderAuthorizePage shows the login and consent page, with an optional
+// error message and a username to fill back in after a failed login.
+func renderAuthorizePage(w http.ResponseWriter, req *authorizeRequest, username, errMsg string) {
 	type scopeLine struct{ Name, Description string }
 	var lines []scopeLine
-	for _, sc := range scope {
+	for _, sc := range req.scope {
 		lines = append(lines, scopeLine{sc, scopeDescriptions[sc]})
 	}
 
@@ -82,23 +141,32 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Cache-Control", "no-store")
 	authorizePage.Execute(w, map[string]any{
-		"ClientID":            client.id,
-		"RedirectURI":         redirectURI,
-		"Scope":               strings.Join(scope, " "),
-		"Scopes":              lines,
-		"State":               state,
-		"CodeChallenge":       q.Get("code_challenge"),
-		"CodeChallengeMethod": "S256",
+		"ClientID":      req.client.id,
+		"RedirectURI":   req.redirectURI,
+		"Scope":         strings.Join(req.scope, " "),
+		"Scopes":        lines,
+		"State":         req.state,
+		"CodeChallenge": req.challenge,
+		"Username":      username,
+		"Error":         errMsg,
 	})
 }
 
 // redirectWithError sends the browser back to the client with an OAuth error
-// (§4.1.2.1). state is echoed back unchanged so the client can match it.
+// (§4.1.2.1).
 func redirectWithError(w http.ResponseWriter, r *http.Request, redirectURI, state, code, description string) {
+	redirectWithParams(w, r, redirectURI, url.Values{"error": {code}, "error_description": {description}}, state)
+}
+
+// redirectWithParams sends the browser back to the client's redirect URI with
+// the given parameters. state is echoed back unchanged so the client can
+// check the response belongs to a request it made.
+func redirectWithParams(w http.ResponseWriter, r *http.Request, redirectURI string, params url.Values, state string) {
 	u, _ := url.Parse(redirectURI) // already checked against the registered list
 	q := u.Query()
-	q.Set("error", code)
-	q.Set("error_description", description)
+	for k, v := range params {
+		q[k] = v
+	}
 	if state != "" {
 		q.Set("state", state)
 	}

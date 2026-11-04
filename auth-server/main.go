@@ -36,6 +36,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /token", s.handleToken)
 	mux.HandleFunc("POST /introspect", s.handleIntrospect)
 	mux.HandleFunc("GET /authorize", s.handleAuthorize)
+	mux.HandleFunc("POST /authorize", s.handleAuthorizeSubmit)
 	return mux
 }
 

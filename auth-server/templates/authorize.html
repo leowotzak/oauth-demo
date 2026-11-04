@@ -10,6 +10,7 @@
   h1 { font-size: 20px; margin: 0 0 4px; }
   p { margin: 0 0 16px; color: #4a5664; }
   ul { margin: 0 0 20px; padding-left: 20px; }
+  .error { color: #b03a3a; font-weight: 600; }
   code { font-size: 13px; color: #4a5664; }
   label { display: block; font-size: 14px; margin-bottom: 12px; }
   input[type=text], input[type=password] { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px; font-size: 15px; border: 1px solid #b8c1cb; border-radius: 4px; }
@@ -27,17 +28,20 @@
     {{range .Scopes}}<li>{{.Description}} <code>{{.Name}}</code></li>{{end}}
   </ul>
 
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+
   <form method="post" action="/authorize">
     <!-- The request details, carried to POST /authorize. Hidden fields can be
          edited by anyone, so the POST handler checks all of them again. -->
+    <input type="hidden" name="response_type" value="code">
     <input type="hidden" name="client_id" value="{{.ClientID}}">
     <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
     <input type="hidden" name="scope" value="{{.Scope}}">
     <input type="hidden" name="state" value="{{.State}}">
     <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
-    <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
+    <input type="hidden" name="code_challenge_method" value="S256">
 
-    <label>Username <input type="text" name="username" autocomplete="username" autofocus></label>
+    <label>Username <input type="text" name="username" value="{{.Username}}" autocomplete="username" autofocus></label>
     <label>Password <input type="password" name="password" autocomplete="current-password"></label>
 
     <div class="buttons">
