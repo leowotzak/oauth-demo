@@ -14,6 +14,8 @@ type server struct {
 	users    map[string]*User
 	tokens   *TokenStore
 	tokenTTL time.Duration
+	codes    *CodeStore
+	codeTTL  time.Duration // authorization codes: short-lived (§4.1.2 says at most 10 minutes)
 }
 
 func newServer() *server {
@@ -22,6 +24,8 @@ func newServer() *server {
 		users:    newUserRegistry(),
 		tokens:   newTokenStore(),
 		tokenTTL: time.Hour,
+		codes:    newCodeStore(),
+		codeTTL:  time.Minute,
 	}
 }
 
