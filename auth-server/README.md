@@ -142,9 +142,11 @@ curl -u "client1:$SECRET1" -d grant_type=authorization_code -d code=<code> \
 
 Left out to keep the demo simple: revoking tokens already issued from a code when someone tries to reuse it (§4.1.2).
 
+### 11. Tokens carry the user
+A token from the authorization code flow records the user who approved it, taken from the code. `/introspect` returns it as `sub` (RFC 7662), alongside `client_id`, so a token means "client1, acting for alice". Client credentials tokens have no user, so `sub` is left out. The notes API uses `sub` to keep each user's notes separate.
+
 ## Next steps
-1. Tokens carry the user: a `userID` on tokens, returned as `sub` by `/introspect`, so the notes API can keep each user's notes separate
-2. A `client-app` that runs the whole flow in a browser as `client1`
-3. Refresh tokens with rotation
-4. Revocation and metadata endpoints
-5. JWT access tokens (optional), so resource servers can check tokens without calling `/introspect`
+1. A `client-app` that runs the whole flow in a browser as `client1`
+2. Refresh tokens with rotation
+3. Revocation and metadata endpoints
+4. JWT access tokens (optional), so resource servers can check tokens without calling `/introspect`

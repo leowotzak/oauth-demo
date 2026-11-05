@@ -22,13 +22,16 @@ client ──GET /notes───────────────────
 1. **Read the token** from `Authorization: Bearer <token>`. If it's missing: 401.
 2. **Introspect it** by asking the auth server whether it's active and what scope it has (RFC 7662). If it's unknown or expired: 401 `invalid_token`. If the auth server can't be reached: 503.
 3. **Check the scope** the endpoint needs. If it's missing: 403 `insufficient_scope`.
+4. **Work out whose notes these are** and pass that to the handler. The owner is the token's `sub` (the user it acts for). A client credentials token has no user, so its owner is the client itself (`client:client2`).
 
 Errors go in the `WWW-Authenticate: Bearer` header, as RFC 6750 §3 requires.
 
 | Endpoint | Needs scope |
 |---|---|
-| `GET /notes` | `notes:read` |
+| `GET /notes` → `{"owner": "user-1", "notes": [...]}` | `notes:read` |
 | `POST /notes` with body `{"text": "..."}` | `notes:write` |
+
+**Notes belong to their owner.** alice and bob both log in through `client1`, but each token acts for a different user, so each sees only their own notes. alice starts with "Buy milk", and bob with "Prepare for OAuth interview".
 
 **401 vs 403:** a 401 means the server doesn't know who you are, so get a valid token. A 403 means it knows who you are, but your token doesn't allow this action.
 
@@ -58,5 +61,6 @@ curl -H "Authorization: Bearer $TOKEN" localhost:8081/notes
 
 ## Design choices
 - **Introspection, not a shared store.** The notes API can't see the auth server's memory, so it asks over HTTP. This is how opaque tokens work. With JWTs, the API could check each token's signature itself without calling the auth server.
+- **Client credentials tokens get their own notes.** A token with no user still works, with the client as owner. The stricter alternative is to reject tokens without a user on endpoints that are about "my" data, since a machine has no notes of its own.
 - **One introspection call per request.** It's simple, and a revoked or expired token is rejected immediately. A real service would usually cache the results briefly to cut down on calls.
 - **The API is a registered client** (`notes-api`) with no grant types. It can call `/introspect` but can't get tokens of its own.
