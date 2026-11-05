@@ -25,12 +25,12 @@ func newTokenStore() *TokenStore {
 }
 
 // issue creates an opaque random access token, saves its record and returns it.
-// userID is empty when no user is involved (client credentials).
-func (s *TokenStore) issue(clientID, userID string, scope []string, ttl time.Duration) string {
+func (s *TokenStore) issue(rec TokenRecord, ttl time.Duration) string {
 	token := generateSecret()
+	rec.expiresAt = time.Now().Add(ttl)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tokens[hashSecret(token)] = &TokenRecord{clientID, userID, scope, time.Now().Add(ttl)}
+	s.tokens[hashSecret(token)] = &rec
 	return token
 }
 

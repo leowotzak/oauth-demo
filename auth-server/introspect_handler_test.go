@@ -25,8 +25,8 @@ func postIntrospect(s *server, id, secret, body string) *httptest.ResponseRecord
 func TestIntrospect(t *testing.T) {
 	s := newServer()
 	api := os.Getenv("NOTES_API_SECRET")
-	valid := s.tokens.issue("client3", "", []string{"notes:read", "notes:write"}, time.Hour)
-	expired := s.tokens.issue("client3", "", []string{"notes:read"}, -time.Second)
+	valid := s.tokens.issue(TokenRecord{clientID: "client3", scope: []string{"notes:read", "notes:write"}}, time.Hour)
+	expired := s.tokens.issue(TokenRecord{clientID: "client3", scope: []string{"notes:read"}}, -time.Second)
 
 	t.Run("active token", func(t *testing.T) {
 		w := postIntrospect(s, "notes-api", api, "token="+valid)
@@ -79,8 +79,8 @@ func TestNotesAPICannotGetTokens(t *testing.T) {
 func TestIntrospectSub(t *testing.T) {
 	s := newServer()
 	api := os.Getenv("NOTES_API_SECRET")
-	userToken := s.tokens.issue("client1", "user-1", []string{"notes:read"}, time.Hour)
-	clientToken := s.tokens.issue("client2", "", []string{"notes:read"}, time.Hour)
+	userToken := s.tokens.issue(TokenRecord{clientID: "client1", userID: "user-1", scope: []string{"notes:read"}}, time.Hour)
+	clientToken := s.tokens.issue(TokenRecord{clientID: "client2", scope: []string{"notes:read"}}, time.Hour)
 
 	var resp introspectionResponse
 	json.Unmarshal(postIntrospect(s, "notes-api", api, "token="+userToken).Body.Bytes(), &resp)
