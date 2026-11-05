@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notes app</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f6f5f1; color: #23262b; margin: 0; padding: 48px 16px; }
+  main { max-width: 440px; margin: 0 auto; background: #fff; border: 1px solid #ddd8cc; border-radius: 6px; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { margin: 0 0 16px; color: #5a5f66; }
+  .message { color: #8a4b12; font-weight: 600; }
+  ul { margin: 0 0 20px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  code { font-size: 13px; }
+  form { margin: 0; }
+  .add { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type=text] { flex: 1; padding: 8px; font-size: 15px; border: 1px solid #c9c3b4; border-radius: 4px; }
+  button, .button { display: inline-block; padding: 9px 14px; font-size: 15px; border-radius: 4px; border: 1px solid #2f5d50; background: #2f5d50; color: #fff; cursor: pointer; text-decoration: none; }
+  .secondary { background: #fff; color: #2f5d50; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Notes app</h1>
+  <p>client-app, acting as <code>client1</code></p>
+
+  {{if .Message}}<p class="message">{{.Message}}</p>{{end}}
+
+  {{if .LoggedIn}}
+    {{if .Owner}}
+      <p>Notes for <code>{{.Owner}}</code>, read through the notes API with your access token:</p>
+      <ul>
+        {{range .Notes}}<li>{{.}}</li>{{else}}<li>No notes yet.</li>{{end}}
+      </ul>
+      <form class="add" method="post" action="/notes">
+        <input type="text" name="text" placeholder="New note" required>
+        <button type="submit">Add</button>
+      </form>
+    {{end}}
+    <form method="post" action="/logout"><button type="submit" class="secondary">Log out</button></form>
+  {{else}}
+    <p>You'll log in on the auth server's page. This app never sees your password.</p>
+    <a class="button" href="/login">Log in with auth-server</a>
+  {{end}}
+</main>
+</body>
+</html>
