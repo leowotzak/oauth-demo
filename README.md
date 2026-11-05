@@ -13,18 +13,29 @@ An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a re
 ## Architecture
 
 ```
-alice's browser (resource owner)
-   │ 1. "Log in"            ┌──────────────────────────────┐
-   ├───────────────────────►│ client-app :9000  (client1)  │
-   │ 2. redirect            └──────┬───────────────┬───────┘
-   ▼                               │ 4. code →     │ 5. GET /notes
-┌──────────────────────────┐       │    token      │    Bearer token
-│ auth-server :8080        │◄──────┘               ▼
-│ /authorize /token        │◄──────────── resource-server :8081
-│ /introspect              │  6. "is this token active?"  (notes API)
-└──────────────────────────┘
-   3. alice logs in and approves on the auth server's own page
+ browser (alice)      client-app :9000        auth-server :8080       resource-server :8081
+      │ 1. GET /login        │                        │                        │
+      ├─────────────────────►│                        │                        │
+      │ 2. 302 → /authorize?…&state&code_challenge    │                        │
+      │◄─────────────────────┤                        │                        │
+      │ 3. log in and approve on the auth server's page                        │
+      ├──────────────────────────────────────────────►│                        │
+      │ 4. 302 → /callback?code&state                 │                        │
+      │◄──────────────────────────────────────────────┤                        │
+      │ 5. GET /callback     │                        │                        │
+      ├─────────────────────►│ 6. POST /token (code, verifier, secret)         │
+      │                      ├───────────────────────►│                        │
+      │                      │◄──── access token ─────┤                        │
+      │                      │ 7. GET /notes (Bearer token)                    │
+      │                      ├────────────────────────────────────────────────►│
+      │                      │                        │◄── 8. POST /introspect ┤
+      │                      │◄──────────────────────── 9. alice's notes ──────┤
+
+ Client credentials (client2, client3) skips steps 1–5: the service calls
+ POST /token with its own secret, then uses the token like step 7.
 ```
+
+Steps 1–5 go through the browser (the front channel); 6–9 go directly between servers (the back channel). The code passes through the browser, which is why `state` and PKCE exist; the token never does.
 
 | Module | Port | OAuth role | Dependencies |
 |---|---|---|---|
