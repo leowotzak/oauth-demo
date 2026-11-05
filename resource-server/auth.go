@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,6 +17,24 @@ type introspection struct {
 	Active   bool   `json:"active"`
 	Scope    string `json:"scope"`
 	ClientID string `json:"client_id"`
+	Sub      string `json:"sub"` // the user the token acts for; empty for client credentials
+}
+
+// owner is whose notes a token gives access to: the user it acts for, or,
+// for client credentials tokens (no user), the client itself.
+func (i introspection) owner() string {
+	if i.Sub != "" {
+		return i.Sub
+	}
+	return "client:" + i.ClientID
+}
+
+// ownerKey stores the token's owner in the request context, so handlers know
+// whose notes to use without touching tokens themselves.
+type ownerKey struct{}
+
+func ownerFrom(r *http.Request) string {
+	return r.Context().Value(ownerKey{}).(string)
 }
 
 // introspect asks the auth server whether a token is active and what it
@@ -76,7 +95,8 @@ func (s *server) requireScope(scope string, next http.HandlerFunc) http.HandlerF
 			return
 		}
 
-		next(w, r)
+		// 4. Pass on whose data this request is about.
+		next(w, r.WithContext(context.WithValue(r.Context(), ownerKey{}, info.owner())))
 	}
 }
 

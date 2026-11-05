@@ -19,7 +19,7 @@ type server struct {
 	httpClient    *http.Client
 
 	mu    sync.Mutex
-	notes []string
+	notes map[string][]string // owner (user ID, or "client:<id>") → their notes
 }
 
 func newServer(introspectURL, clientID, clientSecret string) *server {
@@ -28,7 +28,10 @@ func newServer(introspectURL, clientID, clientSecret string) *server {
 		clientID:      clientID,
 		clientSecret:  clientSecret,
 		httpClient:    &http.Client{Timeout: 5 * time.Second},
-		notes:         []string{"Buy milk", "Prepare for OAuth interview"},
+		notes: map[string][]string{
+			"user-1": {"Buy milk"},                    // alice
+			"user-2": {"Prepare for OAuth interview"}, // bob
+		},
 	}
 }
 

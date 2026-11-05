@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,9 @@ func fakeAuthServer(t *testing.T) *httptest.Server {
 	tokens := map[string]introspection{
 		"read-token":  {Active: true, Scope: "notes:read", ClientID: "client2"},
 		"write-token": {Active: true, Scope: "notes:read notes:write", ClientID: "client3"},
+		// Authorization code tokens: the same client acting for two users.
+		"alice-token": {Active: true, Scope: "notes:read notes:write", ClientID: "client1", Sub: "user-1"},
+		"bob-token":   {Active: true, Scope: "notes:read notes:write", ClientID: "client1", Sub: "user-2"},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id, secret, _ := r.BasicAuth(); id != "notes-api" || secret != "api-secret" {
@@ -79,5 +83,49 @@ func TestNotesAPIWhenAuthServerIsDown(t *testing.T) {
 	s := newServer("http://127.0.0.1:1/introspect", "notes-api", "api-secret")
 	if w := call(s, "GET", "read-token", ""); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status %d, want 503", w.Code)
+	}
+}
+
+// notesFor calls GET /notes with a token and decodes the response.
+func notesFor(t *testing.T, s *server, token string) notesResponse {
+	t.Helper()
+	w := call(s, "GET", token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /notes with %s: status %d", token, w.Code)
+	}
+	var resp notesResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	return resp
+}
+
+// alice and bob use the same client (client1), but each token acts for a
+// different user, so each sees only their own notes.
+func TestNotesArePerUser(t *testing.T) {
+	s := newServer(fakeAuthServer(t).URL, "notes-api", "api-secret")
+
+	alice := notesFor(t, s, "alice-token")
+	if alice.Owner != "user-1" || !slices.Equal(alice.Notes, []string{"Buy milk"}) {
+		t.Errorf("alice got %+v", alice)
+	}
+
+	if w := call(s, "POST", "bob-token", `{"text":"bob's secret"}`); w.Code != http.StatusCreated {
+		t.Fatalf("bob POST: status %d", w.Code)
+	}
+	bob := notesFor(t, s, "bob-token")
+	if bob.Owner != "user-2" || !slices.Contains(bob.Notes, "bob's secret") {
+		t.Errorf("bob got %+v", bob)
+	}
+	if slices.Contains(notesFor(t, s, "alice-token").Notes, "bob's secret") {
+		t.Error("alice can see bob's note")
+	}
+}
+
+// Client credentials tokens have no user, so their notes belong to the
+// client itself, separate from every user's.
+func TestNotesForClientWithoutUser(t *testing.T) {
+	s := newServer(fakeAuthServer(t).URL, "notes-api", "api-secret")
+	got := notesFor(t, s, "read-token")
+	if got.Owner != "client:client2" || got.Notes == nil || len(got.Notes) != 0 {
+		t.Errorf("got %+v, want owner client:client2 with an empty list", got)
 	}
 }

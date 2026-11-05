@@ -5,18 +5,27 @@ import (
 	"net/http"
 )
 
-// These handlers contain no OAuth code: requireScope has already checked
-// the token by the time they run.
+// These handlers contain no OAuth code: requireScope has already checked the
+// token and worked out whose notes the request is for.
 
-// handleListNotes implements GET /notes (needs notes:read).
-func (s *server) handleListNotes(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	writeJSON(w, http.StatusOK, s.notes)
+// notesResponse shows whose notes these are, which makes the per-user
+// separation easy to see in curl output.
+type notesResponse struct {
+	Owner string   `json:"owner"`
+	Notes []string `json:"notes"`
 }
 
-// handleAddNote implements POST /notes (needs notes:write).
-// Body: {"text": "..."}
+// handleListNotes implements GET /notes (needs notes:read): the token
+// owner's notes only.
+func (s *server) handleListNotes(w http.ResponseWriter, r *http.Request) {
+	owner := ownerFrom(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeJSON(w, http.StatusOK, notesResponse{owner, s.notesOf(owner)})
+}
+
+// handleAddNote implements POST /notes (needs notes:write), adding to the
+// token owner's notes. Body: {"text": "..."}
 func (s *server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
@@ -26,8 +35,18 @@ func (s *server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	owner := ownerFrom(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.notes = append(s.notes, body.Text)
-	writeJSON(w, http.StatusCreated, s.notes)
+	s.notes[owner] = append(s.notes[owner], body.Text)
+	writeJSON(w, http.StatusCreated, notesResponse{owner, s.notesOf(owner)})
+}
+
+// notesOf returns an owner's notes, as an empty list rather than null when
+// they have none. The caller holds s.mu.
+func (s *server) notesOf(owner string) []string {
+	if s.notes[owner] == nil {
+		return []string{}
+	}
+	return s.notes[owner]
 }
