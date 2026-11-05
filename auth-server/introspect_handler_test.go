@@ -25,8 +25,8 @@ func postIntrospect(s *server, id, secret, body string) *httptest.ResponseRecord
 func TestIntrospect(t *testing.T) {
 	s := newServer()
 	api := os.Getenv("NOTES_API_SECRET")
-	valid := s.tokens.issue("client3", []string{"notes:read", "notes:write"}, time.Hour)
-	expired := s.tokens.issue("client3", []string{"notes:read"}, -time.Second)
+	valid := s.tokens.issue("client3", "", []string{"notes:read", "notes:write"}, time.Hour)
+	expired := s.tokens.issue("client3", "", []string{"notes:read"}, -time.Second)
 
 	t.Run("active token", func(t *testing.T) {
 		w := postIntrospect(s, "notes-api", api, "token="+valid)
@@ -73,3 +73,4 @@ func TestNotesAPICannotGetTokens(t *testing.T) {
 		t.Errorf("status %d, want 400 unauthorized_client", w.Code)
 	}
 }
+

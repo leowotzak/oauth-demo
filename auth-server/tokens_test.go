@@ -8,7 +8,7 @@ import (
 
 func TestTokenIssueAndLookup(t *testing.T) {
 	store := newTokenStore()
-	token := store.issue("client2", []string{"notes:read"}, time.Hour)
+	token := store.issue("client2", "", []string{"notes:read"}, time.Hour)
 
 	rec, ok := store.lookup(token)
 	if !ok {
@@ -17,14 +17,14 @@ func TestTokenIssueAndLookup(t *testing.T) {
 	if rec.clientID != "client2" || !slices.Equal(rec.scope, []string{"notes:read"}) {
 		t.Errorf("got %+v", rec)
 	}
-	if token == store.issue("client2", []string{"notes:read"}, time.Hour) {
+	if token == store.issue("client2", "", []string{"notes:read"}, time.Hour) {
 		t.Error("two issued tokens are identical")
 	}
 }
 
 func TestTokenLookupFailures(t *testing.T) {
 	store := newTokenStore()
-	expired := store.issue("client2", []string{"notes:read"}, -time.Second)
+	expired := store.issue("client2", "", []string{"notes:read"}, -time.Second)
 
 	for name, token := range map[string]string{
 		"never issued": "not-a-real-token",

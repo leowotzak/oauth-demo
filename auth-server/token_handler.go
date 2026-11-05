@@ -56,8 +56,9 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Work out the scope, which each grant decides differently.
+	// 3. Work out the scope and the user, which each grant decides differently.
 	var scope []string
+	var userID string // stays empty for client credentials: no user is involved
 	switch grantType {
 	case "client_credentials":
 		// The client asks for scopes itself.
@@ -75,10 +76,11 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		scope = code.scope
+		userID = code.userID // the token acts for the user who logged in
 	}
 
 	// 4. Issue the token.
-	token := s.tokens.issue(client.id, scope, s.tokenTTL)
+	token := s.tokens.issue(client.id, userID, scope, s.tokenTTL)
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken: token,
 		TokenType:   "Bearer",

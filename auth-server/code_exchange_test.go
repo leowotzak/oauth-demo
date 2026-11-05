@@ -167,7 +167,11 @@ func TestAuthorizationCodeFlow(t *testing.T) {
 	if w.Code != http.StatusOK || resp.Scope != "notes:read notes:write" {
 		t.Fatalf("got %d %+v, want 200 with the consented scope", w.Code, resp)
 	}
-	if _, ok := s.tokens.lookup(resp.AccessToken); !ok {
-		t.Error("token not in store")
+	rec, ok := s.tokens.lookup(resp.AccessToken)
+	if !ok {
+		t.Fatal("token not in store")
+	}
+	if rec.userID != "user-1" || rec.clientID != "client1" {
+		t.Errorf("token records client %q user %q, want client1 acting for user-1 (alice)", rec.clientID, rec.userID)
 	}
 }

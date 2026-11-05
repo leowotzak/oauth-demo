@@ -8,6 +8,7 @@ import (
 // TokenRecord is what the server remembers about an access token it issued.
 type TokenRecord struct {
 	clientID  string
+	userID    string // the user the client acts for; empty for client credentials
 	scope     []string
 	expiresAt time.Time
 }
@@ -24,11 +25,12 @@ func newTokenStore() *TokenStore {
 }
 
 // issue creates an opaque random access token, saves its record and returns it.
-func (s *TokenStore) issue(clientID string, scope []string, ttl time.Duration) string {
+// userID is empty when no user is involved (client credentials).
+func (s *TokenStore) issue(clientID, userID string, scope []string, ttl time.Duration) string {
 	token := generateSecret()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tokens[hashSecret(token)] = &TokenRecord{clientID, scope, time.Now().Add(ttl)}
+	s.tokens[hashSecret(token)] = &TokenRecord{clientID, userID, scope, time.Now().Add(ttl)}
 	return token
 }
 
