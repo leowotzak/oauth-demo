@@ -74,3 +74,22 @@ func TestNotesAPICannotGetTokens(t *testing.T) {
 	}
 }
 
+// sub tells the resource server which user a token acts for. Client
+// credentials tokens have no user, so sub is left out entirely.
+func TestIntrospectSub(t *testing.T) {
+	s := newServer()
+	api := os.Getenv("NOTES_API_SECRET")
+	userToken := s.tokens.issue("client1", "user-1", []string{"notes:read"}, time.Hour)
+	clientToken := s.tokens.issue("client2", "", []string{"notes:read"}, time.Hour)
+
+	var resp introspectionResponse
+	json.Unmarshal(postIntrospect(s, "notes-api", api, "token="+userToken).Body.Bytes(), &resp)
+	if resp.Sub != "user-1" || resp.ClientID != "client1" {
+		t.Errorf("user token: got %+v, want sub user-1 and client_id client1", resp)
+	}
+
+	body := postIntrospect(s, "notes-api", api, "token="+clientToken).Body.String()
+	if strings.Contains(body, `"sub"`) {
+		t.Errorf("client credentials token has a sub: %s", body)
+	}
+}

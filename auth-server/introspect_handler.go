@@ -12,6 +12,7 @@ type introspectionResponse struct {
 	Active    bool   `json:"active"`
 	Scope     string `json:"scope,omitempty"`
 	ClientID  string `json:"client_id,omitempty"`
+	Sub       string `json:"sub,omitempty"` // the user the token acts for; omitted for client credentials
 	TokenType string `json:"token_type,omitempty"`
 	Exp       int64  `json:"exp,omitempty"` // expiry as a Unix timestamp
 }
@@ -47,6 +48,7 @@ func (s *server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 		Active:    true,
 		Scope:     strings.Join(rec.scope, " "),
 		ClientID:  rec.clientID,
+		Sub:       rec.userID,
 		TokenType: "Bearer",
 		Exp:       rec.expiresAt.Unix(),
 	})
