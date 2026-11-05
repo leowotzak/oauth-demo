@@ -28,18 +28,13 @@ var supportedGrantTypes = []string{"client_credentials", "authorization_code"}
 // (RFC 6749 §4.4) and for exchanging authorization codes (§4.1.3).
 // Each check that fails returns its own error code (§5.2).
 func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
-	// Parameters come from the form-encoded body only; r.PostForm ignores
-	// the query string.
-	r.ParseForm()
-	form := r.PostForm
-
-	// 1. Authenticate the client.
-	id, secret := clientCredentials(r)
-	client, ok := authenticateClient(s.clients, id, secret)
+	// 1. Authenticate the client. Parameters come from the form-encoded body
+	//    only; r.PostForm ignores the query string.
+	client, ok := s.authenticateCaller(w, r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, errInvalidClient, "client authentication failed")
 		return
 	}
+	form := r.PostForm
 
 	// 2. Check the grant type.
 	grantType := form.Get("grant_type")

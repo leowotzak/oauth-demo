@@ -101,6 +101,18 @@ func clientCredentials(r *http.Request) (id, secret string) {
 	return id, secret
 }
 
+// authenticateCaller parses the form body and authenticates the client making
+// the request. On failure it has already written invalid_client (401).
+func (s *server) authenticateCaller(w http.ResponseWriter, r *http.Request) (*ClientRecord, bool) {
+	r.ParseForm()
+	id, secret := clientCredentials(r)
+	client, ok := authenticateClient(s.clients, id, secret)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errInvalidClient, "client authentication failed")
+	}
+	return client, ok
+}
+
 // authenticateClient checks a client ID and secret against the registry.
 // It compares hashes, never plaintext, in constant time.
 func authenticateClient(clients map[string]*ClientRecord, id, secret string) (*ClientRecord, bool) {

@@ -20,14 +20,10 @@ type introspectionResponse struct {
 // handleIntrospect implements POST /introspect (RFC 7662). Resource servers
 // call it to check the tokens clients send them.
 func (s *server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-
 	// 1. The caller must authenticate (§2.1), or anyone could probe tokens.
 	//    Any registered client may introspect here; a real server would
 	//    allow only resource servers.
-	id, secret := clientCredentials(r)
-	if _, ok := authenticateClient(s.clients, id, secret); !ok {
-		writeError(w, http.StatusUnauthorized, errInvalidClient, "client authentication failed")
+	if _, ok := s.authenticateCaller(w, r); !ok {
 		return
 	}
 
