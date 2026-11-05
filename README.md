@@ -33,6 +33,8 @@ It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#sect
 
 Steps 1–5 go through the browser (the front channel); 6–9 go directly between servers (the back channel). The code passes through the browser, which is why `state` and PKCE exist; the token never does.
 
+**[Illustrated version](https://claude.ai/artifact/BdPCWNvpmQ5naBjtfAVCBx):** this flow plus the checks `POST /token` runs for each grant.
+
 | Module | Port | OAuth role |
 |---|---|---|
 | [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/introspect` |
