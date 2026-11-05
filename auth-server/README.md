@@ -145,8 +145,9 @@ Left out to keep the demo simple: revoking tokens already issued from a code whe
 ### 11. Tokens carry the user
 A token from the authorization code flow records the user who approved it, taken from the code. `/introspect` returns it as `sub` (RFC 7662), alongside `client_id`, so a token means "client1, acting for alice". Client credentials tokens have no user, so `sub` is left out. The notes API uses `sub` to keep each user's notes separate.
 
+To see the whole flow in a browser, run [`client-app`](../client-app), which plays `client1`.
+
 ## Next steps
-1. A `client-app` that runs the whole flow in a browser as `client1`
-2. Refresh tokens with rotation
-3. Revocation and metadata endpoints
-4. JWT access tokens (optional), so resource servers can check tokens without calling `/introspect`
+1. Refresh tokens with rotation
+2. Revocation (so logging out can end a token) and metadata endpoints
+3. JWT access tokens (optional), so resource servers can check tokens without calling `/introspect`
