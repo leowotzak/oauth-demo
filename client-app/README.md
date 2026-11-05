@@ -1,8 +1,6 @@
 # client-app
 
-A small web app that plays **`client1`**: it logs users in through [`auth-server`](../auth-server) with the authorization code flow and PKCE, then reads and adds their notes through [`resource-server`](../resource-server). See the [project README](../README.md) for how to run all three and log in.
-
-Unlike the servers, it **uses a library**, [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2), which doubles as a check that the hand-written auth server follows the spec.
+A small web app that plays **`client1`**: it logs users in through [`auth-server`](../auth-server) with the authorization code flow and PKCE, using [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2), then reads and adds their notes through [`resource-server`](../resource-server). See the [project README](../README.md) for how to run all three and log in.
 
 ```sh
 go run .          # http://localhost:9000 (needs auth-server and resource-server running)
@@ -28,8 +26,7 @@ go test ./...     # uses a fake auth server and notes API
 
 ## Security choices
 - **`state` is checked first**, even before error responses, and is single use. A callback the browser didn't start is rejected (CSRF).
-- **The PKCE verifier and client secret never leave the server.** Only the challenge goes through the browser.
-- **The access token stays on the server** (backend for frontend). The browser holds only a random session ID in an `HttpOnly`, `SameSite=Lax` cookie.
+- **The PKCE verifier and client secret never leave the server**, and neither does the access token: the browser holds only an `HttpOnly`, `SameSite=Lax` session cookie.
 
 ## Limitations
 - **It doesn't know the user's name**, only their ID (`user-1`) from the notes API. OAuth grants access, not identity; that's what OpenID Connect adds.

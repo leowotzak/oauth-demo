@@ -1,12 +1,14 @@
 # auth-server
 
-The authorization server, written by hand from [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) (PKCE) and [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (introspection), with no OAuth libraries. It holds the users and clients, runs the login page, and issues and checks tokens. See the [project README](../README.md) for how it fits with the other modules, and for the demo accounts.
+The authorization server, written by hand from [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) (PKCE) and [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (introspection), with no OAuth libraries. It holds the users and clients, runs the login page, and issues and checks tokens. See the [project README](../README.md) for the demo accounts and how it fits with the other modules.
 
 ```sh
 go run .          # http://localhost:8080
 go test ./...
 ./test-curl.sh    # client credentials checks against the running server
 ```
+
+`.env` holds the client secrets, user passwords and their hashes (tutorial only). The bcrypt hashes are single-quoted because they contain `$`.
 
 ## Endpoints
 
@@ -40,30 +42,10 @@ Parameters come from the form body only. Client authentication is HTTP Basic, or
 | **Authorization code:** `code` missing | `invalid_request` |
 | **Authorization code:** code unknown, expired or used; issued to another client; different `redirect_uri`; or `SHA256(code_verifier)` doesn't match the challenge | `invalid_grant` |
 
-For the authorization code grant, the token gets the scope the user approved and records the user; any `scope` parameter is ignored. Checking a code marks it used, so even a failed attempt burns it. Responses carry `Cache-Control: no-store`, and never a refresh token.
+Tokens last one hour. For the authorization code grant, the token gets the scope the user approved and records the user; any `scope` parameter is ignored. Checking a code marks it used, so even a failed attempt burns it. Responses carry `Cache-Control: no-store`, and never a refresh token.
 
 ### `POST /introspect`
 The caller authenticates as a client. A missing `token` is `invalid_request`. An active token returns `active`, `scope`, `client_id`, `sub` (the user; left out for client credentials), `token_type` and `exp`. An unknown or expired token returns only `{"active":false}`, so the caller learns nothing about why.
-
-## Files
-
-| File | Contents |
-|---|---|
-| `main.go` | The `server` struct, routes and startup |
-| `clients.go` | Client registry, client authentication, redirect URI and scope checks |
-| `users.go` | Demo users and password checks (bcrypt) |
-| `authorize_handler.go`, `templates/authorize.html` | `/authorize` and the login and consent page |
-| `token_handler.go` | `/token`, including the code exchange and PKCE check |
-| `introspect_handler.go` | `/introspect` |
-| `codes.go`, `tokens.go` | Authorization code and access token stores |
-| `secrets.go` | Random secret generation and SHA-256 hashing |
-| `errors.go` | OAuth error responses |
-| `.env` | Client secrets, user passwords and their hashes (tutorial only). The bcrypt hashes are single-quoted because they contain `$`. |
-
-## Storage
-- **Client secrets, tokens and codes** are 256 random bits, stored only as SHA-256 hashes and compared in constant time.
-- **User passwords** are bcrypt hashes, because people choose guessable passwords.
-- **Tokens** last one hour; **codes**, one minute. Both stores are in memory, behind a mutex.
 
 ## Left out to keep the demo simple
 - Rejecting repeated parameters, rejecting Basic and body credentials together, and URL-decoding Basic credentials (§2.3.1)

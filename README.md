@@ -2,11 +2,7 @@
 
 An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a resource server and a client app that use it. Built to learn the protocol end to end: every OAuth rule here is implemented directly rather than delegated to an OAuth library.
 
-**What works:**
-- **Client credentials** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a service gets a token as itself.
-- **Authorization code with PKCE** ([§4.1](https://www.rfc-editor.org/rfc/rfc6749#section-4.1), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)): a user logs in on the auth server and approves an app, which gets a token that acts for them.
-- **Token introspection** ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)): the API checks each token with the auth server.
-- **Bearer token protection** ([RFC 6750](https://www.rfc-editor.org/rfc/rfc6750)) with per-endpoint scopes and per-user data.
+It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4) and [authorization code](https://www.rfc-editor.org/rfc/rfc6749#section-4.1) grants with [PKCE](https://www.rfc-editor.org/rfc/rfc7636), [token introspection](https://www.rfc-editor.org/rfc/rfc7662), and [Bearer token](https://www.rfc-editor.org/rfc/rfc6750) protection with per-endpoint scopes and per-user data.
 
 > **Tutorial only.** Plain HTTP, plaintext secrets and passwords in `.env` files, and everything kept in memory (restarting resets tokens, notes and sessions). None of this is suitable for production.
 
@@ -37,13 +33,13 @@ An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a re
 
 Steps 1–5 go through the browser (the front channel); 6–9 go directly between servers (the back channel). The code passes through the browser, which is why `state` and PKCE exist; the token never does.
 
-| Module | Port | OAuth role | Dependencies |
-|---|---|---|---|
-| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/introspect` | `godotenv`, `x/crypto/bcrypt` |
-| [`resource-server`](resource-server) | 8081 | Resource server: a notes API protected by Bearer tokens | `godotenv` |
-| [`client-app`](client-app) | 9000 | Client: a web app that logs users in as `client1` | `godotenv`, [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2) |
+| Module | Port | OAuth role |
+|---|---|---|
+| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/introspect` |
+| [`resource-server`](resource-server) | 8081 | Resource server: a notes API protected by Bearer tokens |
+| [`client-app`](client-app) | 9000 | Client: a web app that logs users in as `client1` |
 
-The client app deliberately uses a standard OAuth client library. If it completes the flow against the hand-written server unchanged, the server follows the spec.
+The client app deliberately uses a standard OAuth client library, [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2). If it completes the flow against the hand-written server unchanged, the server follows the spec.
 
 ## Quick start
 
@@ -81,20 +77,6 @@ go test ./...                     # in each module; uses fakes, no servers neede
 | `client2` | `client_credentials` | `notes:read` | `notes:read` | A read-only service |
 | `client3` | `client_credentials` | `notes:read notes:write metrics:read` | `notes:read` | A service with several scopes |
 | `notes-api` | none | none | none | The resource server; may call `/introspect` but can't get tokens |
-
-## The two flows
-
-**Client credentials** (no user):
-1. A service sends its ID and secret to `POST /token` with `grant_type=client_credentials`.
-2. It gets a token for the scopes it asked for, within its allowed set.
-3. It calls the notes API with `Authorization: Bearer <token>`. Its notes belong to the client itself.
-
-**Authorization code with PKCE** (a user):
-1. `client-app` creates a random `state` and a PKCE verifier, then sends the browser to `GET /authorize` with the verifier's hash (`code_challenge`).
-2. The user logs in and approves on the auth server's own page; the app never sees the password.
-3. The auth server redirects back with a one-minute, single-use `code`.
-4. The app checks `state`, then exchanges the code with its secret and the verifier at `POST /token`, directly rather than through the browser.
-5. The token records the user. The notes API learns who it is (`sub`) through introspection and shows only that user's notes.
 
 ## Design choices
 - **Opaque tokens with introspection**, not JWTs: no signing keys, and a deleted token stops working immediately.
