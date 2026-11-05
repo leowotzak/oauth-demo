@@ -1,14 +1,19 @@
 package main
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
 )
 
 // tokenResponse is a successful token response (RFC 6749 §5.1).
-// No refresh_token: §4.4.3 says not to issue one for client_credentials.
+// No refresh_token yet: §4.4.3 says not to issue one for client_credentials,
+// and refresh tokens for the authorization code flow aren't implemented.
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
@@ -16,8 +21,12 @@ type tokenResponse struct {
 	Scope       string `json:"scope"`
 }
 
+// supportedGrantTypes are the grant_type values this server implements.
+var supportedGrantTypes = []string{"client_credentials", "authorization_code"}
+
 // handleToken implements POST /token for the client credentials grant
-// (RFC 6749 §4.4). Each check that fails returns its own error code (§5.2).
+// (RFC 6749 §4.4) and for exchanging authorization codes (§4.1.3).
+// Each check that fails returns its own error code (§5.2).
 func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// Parameters come from the form-encoded body only; r.PostForm ignores
 	// the query string.
@@ -38,8 +47,8 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "missing grant_type")
 		return
 	}
-	if grantType != "client_credentials" {
-		writeError(w, http.StatusBadRequest, errUnsupportedGrantType, "only client_credentials is supported")
+	if !slices.Contains(supportedGrantTypes, grantType) {
+		writeError(w, http.StatusBadRequest, errUnsupportedGrantType, "unsupported grant_type")
 		return
 	}
 	if !slices.Contains(client.grantTypes, grantType) {
@@ -47,11 +56,25 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Work out the scope.
-	scope, disallowed := resolveScope(client, form.Get("scope"))
-	if disallowed != "" {
-		writeError(w, http.StatusBadRequest, errInvalidScope, "scope "+disallowed+" is not allowed for this client")
-		return
+	// 3. Work out the scope, which each grant decides differently.
+	var scope []string
+	switch grantType {
+	case "client_credentials":
+		// The client asks for scopes itself.
+		var disallowed string
+		scope, disallowed = resolveScope(client, form.Get("scope"))
+		if disallowed != "" {
+			writeError(w, http.StatusBadRequest, errInvalidScope, "scope "+disallowed+" is not allowed for this client")
+			return
+		}
+
+	case "authorization_code":
+		// The scope is whatever the user approved, recorded with the code.
+		code, ok := s.redeemCode(w, client, form)
+		if !ok {
+			return
+		}
+		scope = code.scope
 	}
 
 	// 4. Issue the token.
@@ -62,4 +85,58 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		ExpiresIn:   int(s.tokenTTL / time.Second),
 		Scope:       strings.Join(scope, " "),
 	})
+}
+
+// redeemCode checks an authorization code exchange (RFC 6749 §4.1.3) and
+// returns the code's record. Every failure is invalid_grant (§5.2), with a
+// description saying which check failed. On failure it has already written
+// the response.
+func (s *server) redeemCode(w http.ResponseWriter, client *ClientRecord, form url.Values) (*AuthCode, bool) {
+	fail := func(description string) (*AuthCode, bool) {
+		writeError(w, http.StatusBadRequest, errInvalidGrant, description)
+		return nil, false
+	}
+
+	if form.Get("code") == "" {
+		writeError(w, http.StatusBadRequest, errInvalidRequest, "missing code")
+		return nil, false
+	}
+
+	// 1. The code exists, hasn't expired and hasn't been used. This also marks
+	//    it used, so even a failed attempt below burns it: an attacker with a
+	//    stolen code gets one try at guessing the PKCE verifier, not many.
+	code, ok := s.codes.redeem(form.Get("code"))
+	if !ok {
+		return fail("code is invalid, expired or already used")
+	}
+
+	// 2. It was issued to this client. A code for client1 can't be spent by
+	//    another client, even one that authenticated correctly.
+	if code.clientID != client.id {
+		return fail("code was issued to another client")
+	}
+
+	// 3. redirect_uri is identical to the one used at /authorize (§4.1.3).
+	if form.Get("redirect_uri") != code.redirectURI {
+		return fail("redirect_uri does not match the authorization request")
+	}
+
+	// 4. PKCE (RFC 7636 §4.6): only the app that started the login knows the
+	//    verifier whose hash is the stored challenge.
+	if !pkceMatches(form.Get("code_verifier"), code.challenge) {
+		return fail("code_verifier does not match the code_challenge")
+	}
+
+	return code, true
+}
+
+// pkceMatches checks a PKCE verifier against an S256 challenge:
+// BASE64URL(SHA256(verifier)) must equal the challenge.
+func pkceMatches(verifier, challenge string) bool {
+	if verifier == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	computed := base64.RawURLEncoding.EncodeToString(sum[:])
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
 }

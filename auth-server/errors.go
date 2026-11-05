@@ -13,6 +13,7 @@ const (
 	errUnsupportedGrantType    = "unsupported_grant_type"
 	errUnsupportedResponseType = "unsupported_response_type"
 	errInvalidScope            = "invalid_scope"
+	errInvalidGrant            = "invalid_grant"
 	errAccessDenied            = "access_denied"
 )
 
