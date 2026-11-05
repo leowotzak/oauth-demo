@@ -40,21 +40,47 @@ check() {
   fi
 }
 
+# user_token USER PASSWORD → logs the user in as client1 (authorization code
+# flow with PKCE) and prints the access token. This is what client-app will do
+# in a browser.
+VERIFIER=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk               # RFC 7636 example
+CHALLENGE=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+CALLBACK=http://localhost:9000/callback
+user_token() {
+  local location code
+  location=$(curl -s -o /dev/null -w '%{redirect_url}' \
+    -d response_type=code -d client_id=client1 --data-urlencode "redirect_uri=$CALLBACK" \
+    --data-urlencode "scope=notes:read notes:write" -d state=s -d "code_challenge=$CHALLENGE" -d code_challenge_method=S256 \
+    -d "username=$1" --data-urlencode "password=$2" -d decision=allow "$AUTH/authorize")
+  code=$(echo "$location" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+  curl -s -u "client1:$SECRET1" -d grant_type=authorization_code -d "code=$code" \
+    --data-urlencode "redirect_uri=$CALLBACK" -d "code_verifier=$VERIFIER" "$AUTH/token" \
+    | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'
+}
+
 READ=$(token client2 "$SECRET2")                                # notes:read
 WRITE=$(token client3 "$SECRET3" "notes:read notes:write")      # notes:read notes:write
-echo "client2 token: ${READ:0:10}…   client3 token: ${WRITE:0:10}…"
+ALICE=$(user_token alice "$ALICE_PASSWORD")                     # client1 acting for alice
+BOB=$(user_token bob "$BOB_PASSWORD")                           # client1 acting for bob
+echo "tokens: client2 ${READ:0:8}…  client3 ${WRITE:0:8}…  alice ${ALICE:0:8}…  bob ${BOB:0:8}…"
 
 echo "== Introspection (what the notes API asks the auth server)"
 check "active token"            200 '"active":true'  -u "notes-api:$NOTES_API_SECRET" -d "token=$READ" "$AUTH/introspect"
+check "user token has sub"      200 '"sub":"user-1"' -u "notes-api:$NOTES_API_SECRET" -d "token=$ALICE" "$AUTH/introspect"
 check "unknown token"           200 '"active":false' -u "notes-api:$NOTES_API_SECRET" -d "token=made-up" "$AUTH/introspect"
 check "caller not authenticated" 401 invalid_client   -d "token=$READ" "$AUTH/introspect"
 
 echo "== Notes API"
 check "no token"                401 'Bearer realm="notes"'                  "$API/notes"
 check "made-up token"           401 'error="invalid_token"'                 -H "Authorization: Bearer made-up" "$API/notes"
-check "read token: GET"         200 'Buy milk'                              -H "Authorization: Bearer $READ" "$API/notes"
+check "read token: GET"         200 '"owner":"client:client2"'              -H "Authorization: Bearer $READ" "$API/notes"
 check "read token: POST"        403 'error="insufficient_scope"'            -H "Authorization: Bearer $READ" -d '{"text":"hi"}' "$API/notes"
 check "write token: POST"       201 'from curl'                             -H "Authorization: Bearer $WRITE" -d '{"text":"from curl"}' "$API/notes"
+
+echo "== Users (authorization code tokens, both from client1)"
+check "alice sees her notes"    200 '"owner":"user-1","notes":["Buy milk"]' -H "Authorization: Bearer $ALICE" "$API/notes"
+check "bob adds a note"         201 "bob's note"                            -H "Authorization: Bearer $BOB" -d "{\"text\":\"bob's note\"}" "$API/notes"
+check "alice can't see it"      200 '"notes":["Buy milk"]'                  -H "Authorization: Bearer $ALICE" "$API/notes"
 
 echo
 echo "$pass passed, $fail failed"
