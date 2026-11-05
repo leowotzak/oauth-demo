@@ -38,3 +38,16 @@ func (s *CodeStore) issue(rec AuthCode, ttl time.Duration) string {
 	s.codes[hashSecret(code)] = &rec
 	return code
 }
+
+// redeem returns a code's record and marks it used. It fails if the code is
+// unknown, expired or already used, so each code can be exchanged only once.
+func (s *CodeStore) redeem(code string) (*AuthCode, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.codes[hashSecret(code)]
+	if !ok || rec.used || time.Now().After(rec.expiresAt) {
+		return nil, false
+	}
+	rec.used = true
+	return rec, true
+}
