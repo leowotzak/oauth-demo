@@ -37,15 +37,12 @@ func render(w http.ResponseWriter, status int, p page) {
 // handleHome shows the login button, or the user's notes if they're logged in.
 func (a *app) handleHome(w http.ResponseWriter, r *http.Request) {
 	s := a.sessionFor(w, r)
-	a.mu.Lock()
-	tok := s.token
-	a.mu.Unlock()
-
+	tok := a.tokenOf(s)
 	if tok == nil {
 		render(w, http.StatusOK, page{})
 		return
 	}
-	notes, err := a.listNotes(r.Context(), tok)
+	notes, err := a.callNotes(r.Context(), tok, http.MethodGet, nil)
 	if errors.Is(err, errTokenRejected) {
 		a.setToken(s, nil)
 		render(w, http.StatusOK, page{Message: "Your session expired. Log in again."})
@@ -120,15 +117,14 @@ func (a *app) handleCallback(w http.ResponseWriter, r *http.Request) {
 // handleAddNote adds a note through the notes API with the stored token.
 func (a *app) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	s := a.sessionFor(w, r)
-	a.mu.Lock()
-	tok := s.token
-	a.mu.Unlock()
+	tok := a.tokenOf(s)
 	if tok == nil {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 
-	err := a.addNote(r.Context(), tok, r.PostFormValue("text"))
+	body, _ := json.Marshal(map[string]string{"text": r.PostFormValue("text")})
+	_, err := a.callNotes(r.Context(), tok, http.MethodPost, body)
 	if errors.Is(err, errTokenRejected) {
 		a.setToken(s, nil)
 	} else if err != nil {
@@ -142,6 +138,12 @@ func (a *app) handleAddNote(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleLogout(w http.ResponseWriter, r *http.Request) {
 	a.setToken(a.sessionFor(w, r), nil)
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (a *app) tokenOf(s *session) *oauth2.Token {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return s.token
 }
 
 func (a *app) setToken(s *session, tok *oauth2.Token) {
@@ -159,44 +161,32 @@ type notesResponse struct {
 	Notes []string `json:"notes"`
 }
 
-// listNotes calls GET /notes. a.oauth.Client adds "Authorization: Bearer
-// <token>" to every request it sends.
-func (a *app) listNotes(ctx context.Context, tok *oauth2.Token) (notesResponse, error) {
+// callNotes calls the notes API with the token (GET to list, POST with a JSON
+// body to add). a.oauth.Client adds "Authorization: Bearer <token>" to every
+// request it sends. Both calls answer with the owner's notes.
+func (a *app) callNotes(ctx context.Context, tok *oauth2.Token, method string, body []byte) (notesResponse, error) {
 	var notes notesResponse
 	if !tok.Valid() {
-		return notes, errTokenRejected
+		return notes, errTokenRejected // expired: no point asking
 	}
-	resp, err := a.oauth.Client(ctx, tok).Get(a.notesURL + "/notes")
+	req, err := http.NewRequestWithContext(ctx, method, a.notesURL+"/notes", bytes.NewReader(body))
+	if err != nil {
+		return notes, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.oauth.Client(ctx, tok).Do(req)
 	if err != nil {
 		return notes, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		err = json.NewDecoder(resp.Body).Decode(&notes)
+		return notes, err
+	case http.StatusUnauthorized:
 		return notes, errTokenRejected
-	}
-	if resp.StatusCode != http.StatusOK {
+	default:
 		return notes, fmt.Errorf("notes API returned %s", resp.Status)
 	}
-	err = json.NewDecoder(resp.Body).Decode(&notes)
-	return notes, err
-}
-
-// addNote calls POST /notes with the token.
-func (a *app) addNote(ctx context.Context, tok *oauth2.Token, text string) error {
-	if !tok.Valid() {
-		return errTokenRejected
-	}
-	body, _ := json.Marshal(map[string]string{"text": text})
-	resp, err := a.oauth.Client(ctx, tok).Post(a.notesURL+"/notes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		return errTokenRejected
-	}
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("notes API returned %s", resp.Status)
-	}
-	return nil
 }

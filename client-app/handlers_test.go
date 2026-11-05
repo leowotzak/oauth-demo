@@ -60,6 +60,7 @@ func newFakes(t *testing.T) *fakes {
 			json.NewDecoder(r.Body).Decode(&body)
 			f.noteList = append(f.noteList, body.Text)
 			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(notesResponse{"user-1", f.noteList}) // like the real API
 			return
 		}
 		json.NewEncoder(w).Encode(notesResponse{"user-1", f.noteList})
