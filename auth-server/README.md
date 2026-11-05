@@ -1,8 +1,12 @@
 # auth-server
 
-A hand-written OAuth 2.0 authorization server in Go, built to learn the protocol. No OAuth libraries: the only dependency is [godotenv](https://github.com/joho/godotenv), for loading `.env`.
+A hand-written OAuth 2.0 authorization server in Go, built to learn the protocol. No OAuth libraries: the dependencies are [godotenv](https://github.com/joho/godotenv), for loading `.env`, and `golang.org/x/crypto/bcrypt`, for user passwords.
 
-So far it implements the **client credentials grant** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a machine client authenticates at `POST /token` and receives an access token. Resource servers, such as [`resource-server`](../resource-server), check those tokens at `POST /introspect` ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)).
+It implements two grants:
+- **Client credentials** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a machine client authenticates at `POST /token` and receives an access token.
+- **Authorization code with PKCE** ([§4.1](https://www.rfc-editor.org/rfc/rfc6749#section-4.1), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)): a user logs in at `/authorize` and approves a client, which exchanges the resulting code at `POST /token`.
+
+Resource servers, such as [`resource-server`](../resource-server), check tokens at `POST /introspect` ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)).
 
 > **Tutorial only.** Plaintext client secrets are stored in `.env`, the server uses plain HTTP, and tokens are kept in memory. None of this is suitable for production.
 
@@ -114,9 +118,33 @@ Each code is 256 random bits, stored under its hash, and valid for **1 minute**.
 
 Left out to keep the demo simple: a CSRF token on the login form, and a login session (users log in on every authorization).
 
+### 10. Exchanging the code at `POST /token`
+The client sends `grant_type=authorization_code`, `code`, `redirect_uri` and `code_verifier`, and authenticates with its own secret. After the usual client authentication and grant type checks:
+
+1. **The code exists, hasn't expired and hasn't been used.** Checking it also marks it used, so even a failed attempt burns it: an attacker with a stolen code gets one guess at the PKCE verifier.
+2. **It was issued to this client.**
+3. **`redirect_uri` is identical** to the one sent to `/authorize` (§4.1.3).
+4. **PKCE:** `BASE64URL(SHA256(code_verifier))` must equal the stored challenge (RFC 7636 §4.6).
+
+Any failure is `invalid_grant`; a missing `code` is `invalid_request`. The token gets the scope the user approved, recorded with the code; a `scope` parameter is ignored for this grant.
+
+Try the whole flow with curl (using alice's password and `SECRET1` from `.env`):
+```sh
+# 1. alice logs in and allows; the code is in the Location header
+curl -i -d 'response_type=code&client_id=client1&redirect_uri=http%3A%2F%2Flocalhost%3A9000%2Fcallback&scope=notes%3Aread&state=abc&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&username=alice&decision=allow' \
+  --data-urlencode "password=$ALICE_PASSWORD" localhost:8080/authorize
+
+# 2. client1 exchanges it within a minute, with the PKCE verifier
+curl -u "client1:$SECRET1" -d grant_type=authorization_code -d code=<code> \
+  --data-urlencode redirect_uri=http://localhost:9000/callback \
+  -d code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk localhost:8080/token
+```
+
+Left out to keep the demo simple: revoking tokens already issued from a code when someone tries to reuse it (§4.1.2).
+
 ## Next steps
-1. Exchange the code at `/token` (`grant_type=authorization_code`): check the client, redirect URI, PKCE verifier, expiry and single use, then issue a token that includes the user
-2. PKCE (RFC 7636)
+1. Tokens carry the user: a `userID` on tokens, returned as `sub` by `/introspect`, so the notes API can keep each user's notes separate
+2. A `client-app` that runs the whole flow in a browser as `client1`
 3. Refresh tokens with rotation
 4. Revocation and metadata endpoints
 5. JWT access tokens (optional), so resource servers can check tokens without calling `/introspect`
