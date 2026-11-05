@@ -1,0 +1,103 @@
+# oauth-demo
+
+An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a resource server and a client app that use it. Built to learn the protocol end to end: every OAuth rule here is implemented directly rather than delegated to an OAuth library.
+
+**What works:**
+- **Client credentials** ([RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)): a service gets a token as itself.
+- **Authorization code with PKCE** ([§4.1](https://www.rfc-editor.org/rfc/rfc6749#section-4.1), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)): a user logs in on the auth server and approves an app, which gets a token that acts for them.
+- **Token introspection** ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)): the API checks each token with the auth server.
+- **Bearer token protection** ([RFC 6750](https://www.rfc-editor.org/rfc/rfc6750)) with per-endpoint scopes and per-user data.
+
+> **Tutorial only.** Plain HTTP, plaintext secrets and passwords in `.env` files, and everything kept in memory (restarting resets tokens, notes and sessions). None of this is suitable for production.
+
+## Architecture
+
+```
+alice's browser (resource owner)
+   │ 1. "Log in"            ┌──────────────────────────────┐
+   ├───────────────────────►│ client-app :9000  (client1)  │
+   │ 2. redirect            └──────┬───────────────┬───────┘
+   ▼                               │ 4. code →     │ 5. GET /notes
+┌──────────────────────────┐       │    token      │    Bearer token
+│ auth-server :8080        │◄──────┘               ▼
+│ /authorize /token        │◄──────────── resource-server :8081
+│ /introspect              │  6. "is this token active?"  (notes API)
+└──────────────────────────┘
+   3. alice logs in and approves on the auth server's own page
+```
+
+| Module | Port | OAuth role | Dependencies |
+|---|---|---|---|
+| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/introspect` | `godotenv`, `x/crypto/bcrypt` |
+| [`resource-server`](resource-server) | 8081 | Resource server: a notes API protected by Bearer tokens | `godotenv` |
+| [`client-app`](client-app) | 9000 | Client: a web app that logs users in as `client1` | `godotenv`, [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2) |
+
+The client app deliberately uses a standard OAuth client library. If it completes the flow against the hand-written server unchanged, the server follows the spec.
+
+## Quick start
+
+Requires Go 1.27. Each module reads its own `.env`, so run each from its own folder:
+
+```sh
+cd auth-server && go run .        # terminal 1
+cd resource-server && go run .    # terminal 2
+cd client-app && go run .         # terminal 3
+```
+
+Open **http://localhost:9000**, click "Log in with auth-server", and log in as one of the demo users below. Watch the address bar move from the app to the auth server's login page and back. Each user sees only their own notes.
+
+**Tests:**
+```sh
+go test ./...                     # in each module; uses fakes, no servers needed
+./auth-server/test-curl.sh        # client credentials, against a running auth-server
+./resource-server/test-curl.sh    # both flows end to end, with auth-server and resource-server running
+```
+
+## Demo accounts
+
+**Users** (log in on the auth server's page):
+
+| Username | Password | ID (`sub`) | Starting notes |
+|---|---|---|---|
+| `alice` | `wonderland-42` | `user-1` | "Buy milk" |
+| `bob` | `builder-42` | `user-2` | "Prepare for OAuth interview" |
+
+**Clients** (secrets in `auth-server/.env`):
+
+| Client | Grant | Allowed scopes | Default scope | Purpose |
+|---|---|---|---|---|
+| `client1` | `authorization_code` | `notes:read notes:write` | `notes:read` | The web app, played by `client-app` |
+| `client2` | `client_credentials` | `notes:read` | `notes:read` | A read-only service |
+| `client3` | `client_credentials` | `notes:read notes:write metrics:read` | `notes:read` | A service with several scopes |
+| `notes-api` | none | none | none | The resource server; may call `/introspect` but can't get tokens |
+
+## The two flows
+
+**Client credentials** (no user):
+1. A service sends its ID and secret to `POST /token` with `grant_type=client_credentials`.
+2. It gets a token for the scopes it asked for, within its allowed set.
+3. It calls the notes API with `Authorization: Bearer <token>`. Its notes belong to the client itself.
+
+**Authorization code with PKCE** (a user):
+1. `client-app` creates a random `state` and a PKCE verifier, then sends the browser to `GET /authorize` with the verifier's hash (`code_challenge`).
+2. The user logs in and approves on the auth server's own page; the app never sees the password.
+3. The auth server redirects back with a one-minute, single-use `code`.
+4. The app checks `state`, then exchanges the code with its secret and the verifier at `POST /token`, directly rather than through the browser.
+5. The token records the user. The notes API learns who it is (`sub`) through introspection and shows only that user's notes.
+
+## Design choices
+- **Opaque tokens with introspection**, not JWTs: no signing keys, and a deleted token stops working immediately.
+- **Secrets, tokens and codes are stored only as hashes.** SHA-256 for long random values; bcrypt for human passwords, which are guessable.
+- **Exact redirect URI matching**, and an auth server that never redirects to an unverified URI, even for errors.
+- **PKCE is required, `S256` only.**
+- **A failed code exchange burns the code**, so a stolen code gets one guess at the verifier.
+- **The client app keeps tokens on its server** (backend for frontend); the browser only holds an `HttpOnly` session cookie.
+- **Simplified on purpose.** The code skips production hardening such as validating config, rate limiting and CSRF tokens on the login form, so the protocol logic stays readable. Each module's README lists what it leaves out.
+
+## Not implemented yet
+- Refresh tokens with rotation
+- Revocation ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)), so logging out ends a token
+- Restricting `/introspect` to resource servers, and audience checks
+- Public clients (no secret, PKCE only)
+- Authorization server metadata ([RFC 8414](https://www.rfc-editor.org/rfc/rfc8414))
+- OpenID Connect (identity, not just access) and JWT access tokens
