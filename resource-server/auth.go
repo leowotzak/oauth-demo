@@ -65,15 +65,15 @@ func (s *server) introspect(token string) (introspection, error) {
 // requireScope wraps a handler so it only runs for requests carrying an
 // active Bearer token with the given scope (RFC 6750).
 //
-//	no token          → 401, WWW-Authenticate: Bearer
-//	inactive token    → 401, error="invalid_token"
-//	missing the scope → 403, error="insufficient_scope"
+//	no token          → 401, WWW-Authenticate: Bearer realm="notes"
+//	inactive token    → 401, … error="invalid_token"
+//	missing the scope → 403, … error="insufficient_scope", scope="…"
 func (s *server) requireScope(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 1. Read the token from "Authorization: Bearer <token>" (§2.1).
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || token == "" {
-			bearerError(w, http.StatusUnauthorized, "", "", "missing bearer token")
+			bearerError(w, http.StatusUnauthorized, `Bearer realm="notes"`, "missing bearer token")
 			return
 		}
 
@@ -85,13 +85,13 @@ func (s *server) requireScope(scope string, next http.HandlerFunc) http.HandlerF
 			return
 		}
 		if !info.Active {
-			bearerError(w, http.StatusUnauthorized, "invalid_token", "", "token is unknown or expired")
+			bearerError(w, http.StatusUnauthorized, `Bearer realm="notes", error="invalid_token"`, "token is unknown or expired")
 			return
 		}
 
 		// 3. Check it carries the scope this endpoint needs.
 		if !slices.Contains(strings.Fields(info.Scope), scope) {
-			bearerError(w, http.StatusForbidden, "insufficient_scope", scope, "token lacks scope "+scope)
+			bearerError(w, http.StatusForbidden, `Bearer realm="notes", error="insufficient_scope", scope="`+scope+`"`, "token lacks scope "+scope)
 			return
 		}
 
@@ -101,21 +101,11 @@ func (s *server) requireScope(scope string, next http.HandlerFunc) http.HandlerF
 }
 
 // bearerError sends an RFC 6750 §3 error. The error code goes in the
-// WWW-Authenticate header; the JSON body is just for people reading curl output.
-func bearerError(w http.ResponseWriter, status int, code, scope, description string) {
-	challenge := `Bearer realm="notes"`
-	if code != "" {
-		challenge += fmt.Sprintf(`, error="%s"`, code)
-	}
-	if scope != "" {
-		challenge += fmt.Sprintf(`, scope="%s"`, scope)
-	}
+// WWW-Authenticate header (the "challenge"); the plain-text body is just for
+// people reading curl output.
+func bearerError(w http.ResponseWriter, status int, challenge, message string) {
 	w.Header().Set("WWW-Authenticate", challenge)
-	body := map[string]string{"error_description": description}
-	if code != "" {
-		body["error"] = code
-	}
-	writeJSON(w, status, body)
+	http.Error(w, message, status)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
