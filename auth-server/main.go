@@ -47,9 +47,6 @@ func main() {
 	}
 
 	s := newServer()
-	for id := range s.clients {
-		log.Printf("registered client %s", id)
-	}
 
 	// Plain HTTP for the tutorial; RFC 6749 requires TLS in real deployments.
 	addr := "localhost:8080"

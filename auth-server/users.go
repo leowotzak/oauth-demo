@@ -7,7 +7,6 @@ import "golang.org/x/crypto/bcrypt"
 // credentials has no user.
 type User struct {
 	id           string // stable ID; goes into tokens as the user ("sub")
-	username     string // what they type on the login page
 	passwordHash []byte // bcrypt, never the plaintext
 }
 
@@ -15,8 +14,8 @@ type User struct {
 // The password hashes come from .env.
 func newUserRegistry() map[string]*User {
 	return map[string]*User{
-		"alice": {id: "user-1", username: "alice", passwordHash: []byte(mustGetenv("ALICE_PASSWORD_HASH"))},
-		"bob":   {id: "user-2", username: "bob", passwordHash: []byte(mustGetenv("BOB_PASSWORD_HASH"))},
+		"alice": {id: "user-1", passwordHash: []byte(mustGetenv("ALICE_PASSWORD_HASH"))},
+		"bob":   {id: "user-2", passwordHash: []byte(mustGetenv("BOB_PASSWORD_HASH"))},
 	}
 }
 
