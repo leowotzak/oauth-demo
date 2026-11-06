@@ -64,11 +64,25 @@ ALICE=$(user_token alice "$ALICE_PASSWORD")                     # client1 acting
 BOB=$(user_token bob "$BOB_PASSWORD")                           # client1 acting for bob
 echo "tokens: client2 ${READ:0:8}…  client3 ${WRITE:0:8}…  alice ${ALICE:0:8}…  bob ${BOB:0:8}…"
 
-echo "== Introspection (what the notes API asks the auth server)"
-check "active token"            200 '"active":true'  -u "notes-api:$NOTES_API_SECRET" -d "token=$READ" "$AUTH/introspect"
-check "user token has sub"      200 '"sub":"user-1"' -u "notes-api:$NOTES_API_SECRET" -d "token=$ALICE" "$AUTH/introspect"
-check "unknown token"           200 '"active":false' -u "notes-api:$NOTES_API_SECRET" -d "token=made-up" "$AUTH/introspect"
-check "caller not authenticated" 401 invalid_client   -d "token=$READ" "$AUTH/introspect"
+# claims TOKEN → the JWT's payload, decoded (anyone can read it; only the signature makes it trustworthy)
+claims() {
+  local p=${1#*.}; p=${p%%.*}; p=$(printf '%s' "$p" | tr '_-' '/+')
+  while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+  printf '%s' "$p" | base64 -d 2>/dev/null
+}
+
+echo "== JWT access tokens (checked by the notes API with the auth server's public key)"
+check "public key is published" 200 '"crv":"Ed25519"' "$AUTH/.well-known/jwks.json"
+[[ "$(claims "$ALICE")" == *'"sub":"user-1"'* && "$(claims "$ALICE")" == *'"aud":"notes-api"'* ]] \
+  && { pass=$((pass + 1)); echo "PASS  alice's token names her and the API"; } \
+  || { fail=$((fail + 1)); echo "FAIL  alice's claims: $(claims "$ALICE")"; }
+[[ "$(claims "$READ")" != *'"sub"'* ]] \
+  && { pass=$((pass + 1)); echo "PASS  client token has no user"; } \
+  || { fail=$((fail + 1)); echo "FAIL  client2's claims: $(claims "$READ")"; }
+# Widen client2's scope in the payload, keeping the original signature.
+P=$(claims "$READ" | sed 's/"scope":"notes:read"/"scope":"notes:read notes:write"/' | base64 | tr '+/' '-_' | tr -d '=\n')
+TAMPERED="${READ%%.*}.$P.${READ##*.}"
+check "tampered token rejected" 401 'bad signature' -H "Authorization: Bearer $TAMPERED" -d '{"text":"x"}' "$API/notes"
 
 echo "== Notes API"
 check "no token"                401 'Bearer realm="notes"'                  "$API/notes"

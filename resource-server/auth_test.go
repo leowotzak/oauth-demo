@@ -1,65 +1,100 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
-// fakeAuthServer stands in for auth-server's /introspect. It knows a fixed
-// set of tokens and checks that the caller authenticates as notes-api.
+const (
+	testIssuer   = "http://localhost:8080"
+	testAudience = "notes-api"
+)
+
+// testKeys is a key pair standing in for auth-server's signing key.
+var testPublic, testPrivate, _ = ed25519.GenerateKey(nil)
+
+// fakeAuthServer publishes testPublic as the JWKS, the way auth-server does.
 func fakeAuthServer(t *testing.T) *httptest.Server {
-	tokens := map[string]introspection{
-		"read-token":  {Active: true, Scope: "notes:read", ClientID: "client2"},
-		"write-token": {Active: true, Scope: "notes:read notes:write", ClientID: "client3"},
-		// Authorization code tokens: the same client acting for two users.
-		"alice-token": {Active: true, Scope: "notes:read notes:write", ClientID: "client1", Sub: "user-1"},
-		"bob-token":   {Active: true, Scope: "notes:read notes:write", ClientID: "client1", Sub: "user-2"},
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if id, secret, _ := r.BasicAuth(); id != "notes-api" || secret != "api-secret" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		r.ParseForm()
-		json.NewEncoder(w).Encode(tokens[r.PostForm.Get("token")]) // unknown → {"active":false}
+		json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
+			"kty": "OKP", "crv": "Ed25519", "kid": "key-1", "alg": "EdDSA",
+			"x": base64.RawURLEncoding.EncodeToString(testPublic),
+		}}})
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-func call(s *server, method, token, body string) *httptest.ResponseRecorder {
+func newTestServer(t *testing.T) *server {
+	return newServer(fakeAuthServer(t).URL, testIssuer, testAudience)
+}
+
+// sign builds a JWT from a header and claims, signed with key.
+func sign(key ed25519.PrivateKey, header, claims map[string]any) string {
+	h, _ := json.Marshal(header)
+	c, _ := json.Marshal(claims)
+	input := enc(h) + "." + enc(c)
+	return input + "." + enc(ed25519.Sign(key, []byte(input)))
+}
+
+func enc(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+func goodHeader() map[string]any {
+	return map[string]any{"alg": "EdDSA", "typ": "at+jwt", "kid": "key-1"}
+}
+
+// token makes a valid access token; change() can alter its header or claims.
+func token(sub, clientID, scope string, change func(h, c map[string]any)) string {
+	h := goodHeader()
+	c := map[string]any{
+		"iss": testIssuer, "aud": testAudience, "client_id": clientID, "scope": scope,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(15 * time.Minute).Unix(), "jti": "x",
+	}
+	if sub != "" {
+		c["sub"] = sub
+	}
+	if change != nil {
+		change(h, c)
+	}
+	return sign(testPrivate, h, c)
+}
+
+func call(s *server, method, tok, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "/notes", strings.NewReader(body))
-	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
+	if tok != "" {
+		r.Header.Set("Authorization", "Bearer "+tok)
 	}
 	w := httptest.NewRecorder()
 	s.routes().ServeHTTP(w, r)
 	return w
 }
 
-func TestNotesAPI(t *testing.T) {
-	auth := fakeAuthServer(t)
-	s := newServer(auth.URL, "notes-api", "api-secret")
+func TestValidTokens(t *testing.T) {
+	s := newTestServer(t)
+	read := token("", "client2", "notes:read", nil)
+	write := token("", "client3", "notes:read notes:write", nil)
 
 	cases := []struct {
-		name, method, token, body string
-		wantStatus                int
-		wantChallenge             string // must appear in WWW-Authenticate
+		name, method, tok, body string
+		wantStatus              int
+		wantChallenge           string
 	}{
-		{"no token", "GET", "", "", 401, "Bearer"},
-		{"unknown token", "GET", "made-up", "", 401, `error="invalid_token"`},
-		{"read token can read", "GET", "read-token", "", 200, ""},
-		{"read token cannot write", "POST", "read-token", `{"text":"hi"}`, 403, `error="insufficient_scope", scope="notes:write"`},
-		{"write token can write", "POST", "write-token", `{"text":"hi"}`, 201, ""},
-		{"write token, bad body", "POST", "write-token", `nope`, 400, ""},
+		{"no token", "GET", "", "", 401, `Bearer realm="notes"`},
+		{"read token can read", "GET", read, "", 200, ""},
+		{"read token cannot write", "POST", read, `{"text":"hi"}`, 403, `error="insufficient_scope", scope="notes:write"`},
+		{"write token can write", "POST", write, `{"text":"hi"}`, 201, ""},
+		{"write token, bad body", "POST", write, `nope`, 400, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := call(s, c.method, c.token, c.body)
+			w := call(s, c.method, c.tok, c.body)
 			if w.Code != c.wantStatus {
 				t.Fatalf("status %d, want %d (body %s)", w.Code, c.wantStatus, w.Body)
 			}
@@ -70,28 +105,83 @@ func TestNotesAPI(t *testing.T) {
 	}
 }
 
-func TestNotesAPIWithWrongCredentials(t *testing.T) {
-	// If this service's own secret is wrong, introspection fails and the
-	// request can't be checked.
-	s := newServer(fakeAuthServer(t).URL, "notes-api", "wrong")
-	if w := call(s, "GET", "read-token", ""); w.Code != http.StatusServiceUnavailable {
-		t.Errorf("status %d, want 503", w.Code)
+// Every way a token can be wrong must give 401 invalid_token.
+func TestRejectedTokens(t *testing.T) {
+	s := newTestServer(t)
+	_, otherKey, _ := ed25519.GenerateKey(nil)
+	valid := token("user-1", "client1", "notes:read", nil)
+	parts := strings.Split(valid, ".")
+
+	// Widen the scope in the payload but keep the original signature.
+	payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	widened := strings.Replace(string(payload), `"scope":"notes:read"`, `"scope":"notes:read notes:write"`, 1)
+
+	noneHeader, _ := json.Marshal(map[string]string{"alg": "none", "typ": "at+jwt", "kid": "key-1"})
+
+	cases := map[string]string{
+		"not a JWT":                "made-up",
+		"signed by another key":    sign(otherKey, goodHeader(), map[string]any{"iss": testIssuer, "aud": testAudience, "scope": "notes:read", "exp": time.Now().Add(time.Hour).Unix()}),
+		"tampered payload":         parts[0] + "." + enc([]byte(widened)) + "." + parts[2],
+		`alg "none", no signature`: enc(noneHeader) + "." + parts[1] + ".",
+		"alg HS256":                token("", "client2", "notes:read", func(h, c map[string]any) { h["alg"] = "HS256" }),
+		"not an access token":      token("", "client2", "notes:read", func(h, c map[string]any) { h["typ"] = "JWT" }),
+		"unknown key ID":           token("", "client2", "notes:read", func(h, c map[string]any) { h["kid"] = "key-9" }),
+		"wrong issuer":             token("", "client2", "notes:read", func(h, c map[string]any) { c["iss"] = "https://evil.example" }),
+		"wrong audience":           token("", "client2", "notes:read", func(h, c map[string]any) { c["aud"] = "billing-api" }),
+		"expired":                  token("", "client2", "notes:read", func(h, c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() }),
+	}
+	for name, tok := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := call(s, "GET", tok, "")
+			if w.Code != http.StatusUnauthorized || !strings.Contains(w.Header().Get("WWW-Authenticate"), `error="invalid_token"`) {
+				t.Errorf("status %d, WWW-Authenticate %q; want 401 invalid_token", w.Code, w.Header().Get("WWW-Authenticate"))
+			}
+		})
 	}
 }
 
-func TestNotesAPIWhenAuthServerIsDown(t *testing.T) {
-	s := newServer("http://127.0.0.1:1/introspect", "notes-api", "api-secret")
-	if w := call(s, "GET", "read-token", ""); w.Code != http.StatusServiceUnavailable {
+func TestExpiryAllowsSmallClockSkew(t *testing.T) {
+	s := newTestServer(t)
+	justExpired := token("", "client2", "notes:read", func(h, c map[string]any) { c["exp"] = time.Now().Add(-5 * time.Second).Unix() })
+	if w := call(s, "GET", justExpired, ""); w.Code != http.StatusOK {
+		t.Errorf("status %d, want 200 within the clock skew allowance", w.Code)
+	}
+}
+
+// Keys are fetched once, not on every request.
+func TestKeysAreCached(t *testing.T) {
+	fetches := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches++
+		json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
+			"kty": "OKP", "crv": "Ed25519", "kid": "key-1", "x": enc(testPublic),
+		}}})
+	}))
+	t.Cleanup(srv.Close)
+	s := newServer(srv.URL, testIssuer, testAudience)
+
+	for range 3 {
+		call(s, "GET", token("", "client2", "notes:read", nil), "")
+	}
+	if fetches != 1 {
+		t.Errorf("JWKS fetched %d times, want 1", fetches)
+	}
+}
+
+func TestAuthServerDown(t *testing.T) {
+	// The keys can't be fetched, so no token can be checked: fail closed.
+	s := newServer("http://127.0.0.1:1/.well-known/jwks.json", testIssuer, testAudience)
+	if w := call(s, "GET", token("", "client2", "notes:read", nil), ""); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status %d, want 503", w.Code)
 	}
 }
 
 // notesFor calls GET /notes with a token and decodes the response.
-func notesFor(t *testing.T, s *server, token string) notesResponse {
+func notesFor(t *testing.T, s *server, tok string) notesResponse {
 	t.Helper()
-	w := call(s, "GET", token, "")
+	w := call(s, "GET", tok, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /notes with %s: status %d", token, w.Code)
+		t.Fatalf("GET /notes: status %d (%s)", w.Code, w.Body)
 	}
 	var resp notesResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
@@ -101,21 +191,20 @@ func notesFor(t *testing.T, s *server, token string) notesResponse {
 // alice and bob use the same client (client1), but each token acts for a
 // different user, so each sees only their own notes.
 func TestNotesArePerUser(t *testing.T) {
-	s := newServer(fakeAuthServer(t).URL, "notes-api", "api-secret")
+	s := newTestServer(t)
+	alice := token("user-1", "client1", "notes:read notes:write", nil)
+	bob := token("user-2", "client1", "notes:read notes:write", nil)
 
-	alice := notesFor(t, s, "alice-token")
-	if alice.Owner != "user-1" || !slices.Equal(alice.Notes, []string{"Buy milk"}) {
-		t.Errorf("alice got %+v", alice)
+	if got := notesFor(t, s, alice); got.Owner != "user-1" || !slices.Equal(got.Notes, []string{"Buy milk"}) {
+		t.Errorf("alice got %+v", got)
 	}
-
-	if w := call(s, "POST", "bob-token", `{"text":"bob's secret"}`); w.Code != http.StatusCreated {
+	if w := call(s, "POST", bob, `{"text":"bob's secret"}`); w.Code != http.StatusCreated {
 		t.Fatalf("bob POST: status %d", w.Code)
 	}
-	bob := notesFor(t, s, "bob-token")
-	if bob.Owner != "user-2" || !slices.Contains(bob.Notes, "bob's secret") {
-		t.Errorf("bob got %+v", bob)
+	if got := notesFor(t, s, bob); got.Owner != "user-2" || !slices.Contains(got.Notes, "bob's secret") {
+		t.Errorf("bob got %+v", got)
 	}
-	if slices.Contains(notesFor(t, s, "alice-token").Notes, "bob's secret") {
+	if slices.Contains(notesFor(t, s, alice).Notes, "bob's secret") {
 		t.Error("alice can see bob's note")
 	}
 }
@@ -123,8 +212,8 @@ func TestNotesArePerUser(t *testing.T) {
 // Client credentials tokens have no user, so their notes belong to the
 // client itself, separate from every user's.
 func TestNotesForClientWithoutUser(t *testing.T) {
-	s := newServer(fakeAuthServer(t).URL, "notes-api", "api-secret")
-	got := notesFor(t, s, "read-token")
+	s := newTestServer(t)
+	got := notesFor(t, s, token("", "client2", "notes:read", nil))
 	if got.Owner != "client:client2" || got.Notes == nil || len(got.Notes) != 0 {
 		t.Errorf("got %+v, want owner client:client2 with an empty list", got)
 	}
