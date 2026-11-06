@@ -1,5 +1,7 @@
 # oauth-demo
 
+[![CI](https://github.com/leowotzak/oauth-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/leowotzak/oauth-demo/actions/workflows/ci.yml)
+
 An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a resource server and a client app that use it. Built to learn the protocol end to end: every OAuth rule here is implemented directly rather than delegated to an OAuth library.
 
 It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4) and [authorization code](https://www.rfc-editor.org/rfc/rfc6749#section-4.1) grants with [PKCE](https://www.rfc-editor.org/rfc/rfc7636), [JWT access tokens](https://www.rfc-editor.org/rfc/rfc9068) that APIs check themselves, and [Bearer token](https://www.rfc-editor.org/rfc/rfc6750) protection with per-endpoint scopes and per-user data.
@@ -67,6 +69,8 @@ go test ./...                     # in each module; uses fakes, no servers neede
 ./auth-server/test-curl.sh        # client credentials, against a running auth-server
 ./resource-server/test-curl.sh    # both flows end to end, with auth-server and resource-server running
 ```
+
+[CI](.github/workflows/ci.yml) runs these on every push to `master` and every pull request: formatting, `go vet` and `go test -race` for each module, then the whole suite in Docker with both curl suites.
 
 ## Demo accounts
 

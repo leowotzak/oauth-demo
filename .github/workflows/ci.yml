@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push to the same branch or PR cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Each module on its own: formatting, vet, and unit tests with the race
+  # detector. No services needed: tests use fakes, including an in-process Redis.
+  test:
+    name: test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [auth-server, resource-server, client-app]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+  # The whole suite in Docker, as a user would run it: build the images, start
+  # everything with Redis, then run both curl suites against the real servers.
+  end-to-end:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the suite
+        run: docker compose up --build --detach --wait --wait-timeout 120
+
+      - name: Wait for the apps to answer
+        run: |
+          for i in $(seq 1 60); do
+            curl -s -o /dev/null localhost:8080/.well-known/jwks.json &&
+            curl -s -o /dev/null localhost:8081/notes &&
+            curl -s -o /dev/null localhost:9000/ && exit 0
+            sleep 1
+          done
+          echo "The apps didn't start answering within a minute"; exit 1
+
+      - name: auth-server curl suite
+        run: ./auth-server/test-curl.sh
+
+      - name: End-to-end curl suite (both flows, JWTs, revocation)
+        run: ./resource-server/test-curl.sh
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop the suite
+        if: always()
+        run: docker compose down --volumes
