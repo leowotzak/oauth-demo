@@ -22,6 +22,7 @@ type claims struct {
 	ClientID string `json:"client_id"`
 	Scope    string `json:"scope"`
 	Expires  int64  `json:"exp"`
+	ID       string `json:"jti"` // checked against the auth server's revocation list
 }
 
 // owner is whose notes a token gives access to: the user it acts for, or,
@@ -160,7 +161,7 @@ func (s *server) fetchKeys() (map[string]ed25519.PublicKey, error) {
 // JWT access token with the given scope (RFC 6750).
 //
 //	no token          → 401, WWW-Authenticate: Bearer realm="notes"
-//	invalid token     → 401, … error="invalid_token"
+//	invalid token     → 401, … error="invalid_token" (including revoked)
 //	missing the scope → 403, … error="insufficient_scope", scope="…"
 func (s *server) requireScope(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -183,13 +184,27 @@ func (s *server) requireScope(scope string, next http.HandlerFunc) http.HandlerF
 			return
 		}
 
-		// 3. Check it carries the scope this endpoint needs.
+		// 3. Check it hasn't been revoked. A valid signature can't be undone, so
+		//    the auth server lists revoked token IDs in Redis instead. If Redis
+		//    is down, fail closed: a revoked token must never slip through.
+		revoked, err := s.rdb.Exists(r.Context(), "revoked:"+c.ID).Result()
+		if err != nil {
+			log.Printf("checking revocation list: %v", err)
+			http.Error(w, "cannot check token right now", http.StatusServiceUnavailable)
+			return
+		}
+		if revoked == 1 {
+			bearerError(w, http.StatusUnauthorized, `Bearer realm="notes", error="invalid_token"`, "invalid token: revoked")
+			return
+		}
+
+		// 4. Check it carries the scope this endpoint needs.
 		if !slices.Contains(strings.Fields(c.Scope), scope) {
 			bearerError(w, http.StatusForbidden, `Bearer realm="notes", error="insufficient_scope", scope="`+scope+`"`, "token lacks scope "+scope)
 			return
 		}
 
-		// 4. Pass on whose data this request is about.
+		// 5. Pass on whose data this request is about.
 		next(w, r.WithContext(context.WithValue(r.Context(), ownerKey{}, c.owner())))
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -32,8 +36,20 @@ func fakeAuthServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// testRedis starts an in-process fake Redis for one test.
+func testRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
+	mr := miniredis.RunT(t)
+	return mr, redis.NewClient(&redis.Options{Addr: mr.Addr()})
+}
+
+// newTestServer is a notes API with its own fake Redis, seeded like main does.
 func newTestServer(t *testing.T) *server {
-	return newServer(fakeAuthServer(t).URL, testIssuer, testAudience)
+	_, rdb := testRedis(t)
+	s := newServer(fakeAuthServer(t).URL, testIssuer, testAudience, rdb)
+	if err := s.seedNotes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 // sign builds a JWT from a header and claims, signed with key.
@@ -158,7 +174,8 @@ func TestKeysAreCached(t *testing.T) {
 		}}})
 	}))
 	t.Cleanup(srv.Close)
-	s := newServer(srv.URL, testIssuer, testAudience)
+	_, rdb := testRedis(t)
+	s := newServer(srv.URL, testIssuer, testAudience, rdb)
 
 	for range 3 {
 		call(s, "GET", token("", "client2", "notes:read", nil), "")
@@ -170,7 +187,8 @@ func TestKeysAreCached(t *testing.T) {
 
 func TestAuthServerDown(t *testing.T) {
 	// The keys can't be fetched, so no token can be checked: fail closed.
-	s := newServer("http://127.0.0.1:1/.well-known/jwks.json", testIssuer, testAudience)
+	_, rdb := testRedis(t)
+	s := newServer("http://127.0.0.1:1/.well-known/jwks.json", testIssuer, testAudience, rdb)
 	if w := call(s, "GET", token("", "client2", "notes:read", nil), ""); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status %d, want 503", w.Code)
 	}
@@ -216,5 +234,50 @@ func TestNotesForClientWithoutUser(t *testing.T) {
 	got := notesFor(t, s, token("", "client2", "notes:read", nil))
 	if got.Owner != "client:client2" || got.Notes == nil || len(got.Notes) != 0 {
 		t.Errorf("got %+v, want owner client:client2 with an empty list", got)
+	}
+}
+
+// A revoked token still has a valid signature, so only the deny list in
+// Redis stops it.
+func TestRevokedTokenIsRejected(t *testing.T) {
+	mr, rdb := testRedis(t)
+	s := newServer(fakeAuthServer(t).URL, testIssuer, testAudience, rdb)
+	tok := token("", "client2", "notes:read", func(h, c map[string]any) { c["jti"] = "revoked-one" })
+
+	if w := call(s, "GET", tok, ""); w.Code != http.StatusOK {
+		t.Fatalf("before revoking: status %d", w.Code)
+	}
+	mr.Set("revoked:revoked-one", "1") // what the auth server's /revoke does
+	w := call(s, "GET", tok, "")
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "revoked") {
+		t.Errorf("after revoking: status %d, body %q; want 401 revoked", w.Code, w.Body)
+	}
+}
+
+// Without Redis, revocation can't be checked: fail closed, even for a token
+// with a good signature.
+func TestRedisDown(t *testing.T) {
+	s := newServer(fakeAuthServer(t).URL, testIssuer, testAudience,
+		redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1}))
+	if w := call(s, "GET", token("", "client2", "notes:read", nil), ""); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status %d, want 503", w.Code)
+	}
+}
+
+// Notes live in Redis, so they survive a restart, and seeding again doesn't
+// duplicate them.
+func TestNotesSurviveRestart(t *testing.T) {
+	_, rdb := testRedis(t)
+	auth := fakeAuthServer(t).URL
+	alice := token("user-1", "client1", "notes:read notes:write", nil)
+
+	first := newServer(auth, testIssuer, testAudience, rdb)
+	first.seedNotes(context.Background())
+	call(first, "POST", alice, `{"text":"remember me"}`)
+
+	restarted := newServer(auth, testIssuer, testAudience, rdb)
+	restarted.seedNotes(context.Background())
+	if got := notesFor(t, restarted, alice).Notes; !slices.Equal(got, []string{"Buy milk", "remember me"}) {
+		t.Errorf("after restart: %v", got)
 	}
 }
