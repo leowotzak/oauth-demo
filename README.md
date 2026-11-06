@@ -4,7 +4,7 @@
 
 An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a resource server and a client app that use it. Built to learn the protocol end to end: every OAuth rule here is implemented directly rather than delegated to an OAuth library.
 
-It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4) and [authorization code](https://www.rfc-editor.org/rfc/rfc6749#section-4.1) grants with [PKCE](https://www.rfc-editor.org/rfc/rfc7636), [JWT access tokens](https://www.rfc-editor.org/rfc/rfc9068) that APIs check themselves, and [Bearer token](https://www.rfc-editor.org/rfc/rfc6750) protection with per-endpoint scopes and per-user data.
+It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4) and [authorization code](https://www.rfc-editor.org/rfc/rfc6749#section-4.1) grants with [PKCE](https://www.rfc-editor.org/rfc/rfc7636), [JWT access tokens](https://www.rfc-editor.org/rfc/rfc9068) that APIs check themselves, [token revocation](https://www.rfc-editor.org/rfc/rfc7009), and [Bearer token](https://www.rfc-editor.org/rfc/rfc6750) protection with per-endpoint scopes and per-user data.
 
 > **Tutorial only.** Plain HTTP, plaintext secrets and passwords in `.env` files, and Redis without a password. None of this is suitable for production.
 
@@ -35,13 +35,13 @@ It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#sect
 
 Steps 1–5 go through the browser (the front channel); 6–9 go directly between servers (the back channel). The code passes through the browser, which is why `state` and PKCE exist; the token never does.
 
-The access token is a signed JWT. Step 8 happens only once: the notes API fetches the auth server's public key, then checks every token's signature itself, without calling the auth server again.
+The access token is a signed JWT. Step 8 happens only once: the notes API fetches the auth server's public key, then checks every token's signature itself, without calling the auth server again. It does check Redis on each request, for tokens that have been revoked.
 
 **[Illustrated version](https://claude.ai/artifact/BdPCWNvpmQ5naBjtfAVCBx):** this flow plus the checks `POST /token` runs for each grant.
 
 | Module | Port | OAuth role |
 |---|---|---|
-| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, and its public key at `/.well-known/jwks.json` |
+| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/revoke`, and its public key at `/.well-known/jwks.json` |
 | [`resource-server`](resource-server) | 8081 | Resource server: a notes API protected by Bearer tokens |
 | [`client-app`](client-app) | 9000 | Client: a web app that logs users in as `client1` |
 | Redis | 6379 | Shared state: authorization codes, client-app sessions, revoked token IDs and notes |
@@ -90,7 +90,7 @@ go test ./...                     # in each module; uses fakes, no servers neede
 | `client3` | `client_credentials` | `notes:read notes:write metrics:read` | `notes:read` | A service with several scopes |
 
 ## Design choices
-- **JWT access tokens signed with Ed25519** ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)). The notes API checks them itself, so it doesn't depend on the auth server for every request. The trade-off: a token can't be revoked before it expires, so tokens last only 15 minutes.
+- **JWT access tokens signed with Ed25519** ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)). The notes API checks them itself, so it doesn't depend on the auth server for every request. A valid signature can't be undone, so tokens last only 15 minutes, and revocation needs the deny list below.
 - **Revocation through a deny list in Redis.** `POST /revoke` (RFC 7009) adds a token's ID (`jti`) to Redis until the token would have expired anyway, and the notes API checks that list after the signature. Logging out of the client app revokes its token. If Redis is down, the notes API **fails closed**, so a revoked token can never slip through.
 - **Short-lived state lives in Redis**, with TTLs doing the expiry: authorization codes (redeemed with atomic `GETDEL`, so they're single use), client app sessions, and the deny list. Notes are there too. State survives restarts, and several copies of each app could share it.
 - **Secrets, codes and session IDs are stored only as hashes**, in `.env` and in Redis. SHA-256 for long random values; bcrypt for human passwords, which are guessable.
