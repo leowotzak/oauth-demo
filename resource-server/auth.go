@@ -201,9 +201,3 @@ func bearerError(w http.ResponseWriter, status int, challenge, message string) {
 	w.Header().Set("WWW-Authenticate", challenge)
 	http.Error(w, message, status)
 }
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
-}

@@ -85,21 +85,15 @@ func newClientRegistry() map[string]*ClientRecord {
 	}
 }
 
-// clientCredentials reads the client ID and secret from HTTP Basic auth, or
-// from client_id/client_secret in the body (RFC 6749 §2.3.1).
-func clientCredentials(r *http.Request) (id, secret string) {
+// authenticateCaller parses the form body and authenticates the client making
+// the request, from HTTP Basic auth or client_id/client_secret in the body
+// (RFC 6749 §2.3.1). On failure it has already written invalid_client (401).
+func (s *server) authenticateCaller(w http.ResponseWriter, r *http.Request) (*ClientRecord, bool) {
+	r.ParseForm()
 	id, secret, ok := r.BasicAuth()
 	if !ok {
 		id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
-	return id, secret
-}
-
-// authenticateCaller parses the form body and authenticates the client making
-// the request. On failure it has already written invalid_client (401).
-func (s *server) authenticateCaller(w http.ResponseWriter, r *http.Request) (*ClientRecord, bool) {
-	r.ParseForm()
-	id, secret := clientCredentials(r)
 	client, ok := authenticateClient(s.clients, id, secret)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errInvalidClient, "client authentication failed")
