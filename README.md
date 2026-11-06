@@ -2,9 +2,9 @@
 
 An OAuth 2.0 authorization server written by hand in Go from the RFCs, plus a resource server and a client app that use it. Built to learn the protocol end to end: every OAuth rule here is implemented directly rather than delegated to an OAuth library.
 
-It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4) and [authorization code](https://www.rfc-editor.org/rfc/rfc6749#section-4.1) grants with [PKCE](https://www.rfc-editor.org/rfc/rfc7636), [token introspection](https://www.rfc-editor.org/rfc/rfc7662), and [Bearer token](https://www.rfc-editor.org/rfc/rfc6750) protection with per-endpoint scopes and per-user data.
+It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4) and [authorization code](https://www.rfc-editor.org/rfc/rfc6749#section-4.1) grants with [PKCE](https://www.rfc-editor.org/rfc/rfc7636), [JWT access tokens](https://www.rfc-editor.org/rfc/rfc9068) that APIs check themselves, and [Bearer token](https://www.rfc-editor.org/rfc/rfc6750) protection with per-endpoint scopes and per-user data.
 
-> **Tutorial only.** Plain HTTP, plaintext secrets and passwords in `.env` files, and everything kept in memory (restarting resets tokens, notes and sessions). None of this is suitable for production.
+> **Tutorial only.** Plain HTTP, plaintext secrets and passwords in `.env` files, and everything kept in memory (restarting resets notes, codes and sessions). None of this is suitable for production.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#sect
       │                      │◄──── access token ─────┤                        │
       │                      │ 7. GET /notes (Bearer token)                    │
       │                      ├────────────────────────────────────────────────►│
-      │                      │                        │◄── 8. POST /introspect ┤
+      │                      │                        │◄── 8. GET jwks.json ───┤
       │                      │◄──────────────────────── 9. alice's notes ──────┤
 
  Client credentials (client2, client3) skips steps 1–5: the service calls
@@ -33,11 +33,13 @@ It supports the [client credentials](https://www.rfc-editor.org/rfc/rfc6749#sect
 
 Steps 1–5 go through the browser (the front channel); 6–9 go directly between servers (the back channel). The code passes through the browser, which is why `state` and PKCE exist; the token never does.
 
+The access token is a signed JWT. Step 8 happens only once: the notes API fetches the auth server's public key, then checks every token's signature itself, without calling the auth server again.
+
 **[Illustrated version](https://claude.ai/artifact/BdPCWNvpmQ5naBjtfAVCBx):** this flow plus the checks `POST /token` runs for each grant.
 
 | Module | Port | OAuth role |
 |---|---|---|
-| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/introspect` |
+| [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, and its public key at `/.well-known/jwks.json` |
 | [`resource-server`](resource-server) | 8081 | Resource server: a notes API protected by Bearer tokens |
 | [`client-app`](client-app) | 9000 | Client: a web app that logs users in as `client1` |
 
@@ -78,11 +80,10 @@ go test ./...                     # in each module; uses fakes, no servers neede
 | `client1` | `authorization_code` | `notes:read notes:write` | `notes:read` | The web app, played by `client-app` |
 | `client2` | `client_credentials` | `notes:read` | `notes:read` | A read-only service |
 | `client3` | `client_credentials` | `notes:read notes:write metrics:read` | `notes:read` | A service with several scopes |
-| `notes-api` | none | none | none | The resource server; may call `/introspect` but can't get tokens |
 
 ## Design choices
-- **Opaque tokens with introspection**, not JWTs: no signing keys, and a deleted token stops working immediately.
-- **Secrets, tokens and codes are stored only as hashes.** SHA-256 for long random values; bcrypt for human passwords, which are guessable.
+- **JWT access tokens signed with Ed25519** ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)). The notes API checks them itself, so it doesn't depend on the auth server for every request. The trade-off: a token can't be revoked before it expires, so tokens last only 15 minutes.
+- **Secrets and codes are stored only as hashes.** SHA-256 for long random values; bcrypt for human passwords, which are guessable.
 - **Exact redirect URI matching**, and an auth server that never redirects to an unverified URI, even for errors.
 - **PKCE is required, `S256` only.**
 - **A failed code exchange burns the code**, so a stolen code gets one guess at the verifier.
@@ -91,8 +92,8 @@ go test ./...                     # in each module; uses fakes, no servers neede
 
 ## Not implemented yet
 - Refresh tokens with rotation
-- Revocation ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)), so logging out ends a token
-- Restricting `/introspect` to resource servers, and audience checks
+- Revocation, so logging out ends a token. With JWTs, that needs refresh tokens or a deny list of token IDs (`jti`).
+- Signing key rotation (there's one fixed key)
 - Public clients (no secret, PKCE only)
 - Authorization server metadata ([RFC 8414](https://www.rfc-editor.org/rfc/rfc8414))
-- OpenID Connect (identity, not just access) and JWT access tokens
+- OpenID Connect (identity, not just access)

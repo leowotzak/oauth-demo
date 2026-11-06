@@ -31,5 +31,5 @@ go test ./...     # uses a fake auth server and notes API
 ## Limitations
 - **It doesn't know the user's name**, only their ID (`user-1`) from the notes API. OAuth grants access, not identity; that's what OpenID Connect adds.
 - **Logging out doesn't end the token** at the auth server, which has no revocation endpoint yet.
-- **There are no refresh tokens**, so users log in again when the token expires after an hour.
+- **There are no refresh tokens**, so users log in again when the token expires after 15 minutes.
 - **Sessions are kept in memory.**
