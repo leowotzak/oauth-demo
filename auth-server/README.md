@@ -1,14 +1,14 @@
 # auth-server
 
-The authorization server, written by hand from [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) (PKCE) and [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068) (JWT access tokens), with no OAuth or JWT libraries. It holds the users and clients, runs the login page, and issues signed access tokens. See the [project README](../README.md) for the demo accounts and how it fits with the other modules.
+The authorization server, written by hand from [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) (PKCE) and [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068) (JWT access tokens), with no OAuth or JWT libraries. It holds the users and clients, runs the login page, issues signed access tokens, and revokes them. Authorization codes and revoked token IDs live in Redis. See the [project README](../README.md) for the demo accounts and how it fits with the other modules.
 
 ```sh
-go run .          # http://localhost:8080
-go test ./...
+go run .          # http://localhost:8080 (needs Redis: docker compose up -d redis)
+go test ./...     # uses an in-process fake Redis
 ./test-curl.sh    # client credentials checks against the running server
 ```
 
-`.env` holds the client secrets, user passwords and their hashes, and the token signing key (tutorial only). The bcrypt hashes are single-quoted because they contain `$`.
+`.env` holds the client secrets, user passwords and their hashes, the token signing key, and `REDIS_URL` (tutorial only). The bcrypt hashes are single-quoted because they contain `$`.
 
 ## Endpoints
 
@@ -17,6 +17,7 @@ go test ./...
 | `GET /authorize` | The user's browser | Validates the request, shows the login and consent page |
 | `POST /authorize` | The login page | Checks the password, then redirects back with a code (or an error) |
 | `POST /token` | Clients | Issues tokens for `client_credentials` and `authorization_code` |
+| `POST /revoke` | Clients | Revokes one of the client's own access tokens (RFC 7009) |
 | `GET /.well-known/jwks.json` | Resource servers | Publishes the public key that checks token signatures |
 
 ### `GET` and `POST /authorize`
@@ -42,7 +43,7 @@ Parameters come from the form body only. Client authentication is HTTP Basic, or
 | **Authorization code:** `code` missing | `invalid_request` |
 | **Authorization code:** code unknown, expired or used; issued to another client; different `redirect_uri`; or `SHA256(code_verifier)` doesn't match the challenge | `invalid_grant` |
 
-For the authorization code grant, the token gets the scope the user approved and records the user; any `scope` parameter is ignored. Checking a code marks it used, so even a failed attempt burns it. Responses carry `Cache-Control: no-store`, and never a refresh token.
+For the authorization code grant, the token gets the scope the user approved and records the user; any `scope` parameter is ignored. Codes are stored in Redis as `code:<hash>` with a one-minute TTL, and redeemed with `GETDEL`, which reads and deletes in one atomic step: a code works once, even if two requests arrive together, and even a failed attempt burns it. Responses carry `Cache-Control: no-store`, and never a refresh token.
 
 ### Access tokens (`jwt.go`)
 Each access token is a JWT signed with the server's Ed25519 key (`alg: EdDSA`, `typ: at+jwt`, `kid: key-1`):
@@ -52,7 +53,12 @@ Each access token is a JWT signed with the server's Ed25519 key (`alg: EdDSA`, `
 ```
 `sub` is left out for client credentials. The payload is signed, not encrypted, so it holds nothing secret. The public key is published at `/.well-known/jwks.json` (RFC 7517 and 8037), and it can check tokens but not make them.
 
-The server stores no tokens, so it **can't revoke one**: a token works until `exp`. That's why tokens last only **15 minutes**.
+The server stores no tokens, and a valid signature can't be undone, so tokens last only **15 minutes**.
+
+### `POST /revoke` (`revoke_handler.go`)
+A client authenticates and sends `token=<access token>`. If it's a genuine, unexpired token **issued to that client**, its `jti` goes into Redis as `revoked:<jti>`, with a TTL that ends when the token would have expired anyway, so the deny list never grows. Resource servers check that key. Anything else (an unknown token, another client's token, an expired one) needs no action and still gets 200 OK (§2.2), so the caller learns nothing and retrying is always safe.
+
+If Redis is down, logins, code exchanges and revocations return 503 rather than continuing without their checks.
 
 ## Left out to keep the demo simple
 - Rejecting repeated parameters, rejecting Basic and body credentials together, and URL-decoding Basic credentials (§2.3.1)
