@@ -1,0 +1,9 @@
+# Secrets reach the containers through compose env_file, never the image.
+**/.env
+
+# Not needed to build the binaries.
+.git
+notes.md
+**/*_test.go
+**/test-curl.sh
+**/*.md

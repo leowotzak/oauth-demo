@@ -57,6 +57,8 @@ cd client-app && go run .         # terminal 3
 
 Open **http://localhost:9000**, click "Log in with auth-server", and log in as one of the demo users below. Watch the address bar move from the app to the auth server's login page and back. Each user sees only their own notes.
 
+**Or with Docker:** `docker compose up --build`, then open the same URL. One [`Dockerfile`](Dockerfile) builds any of the three apps (`--build-arg SERVICE=…`) into a small non-root image, and [`compose.yaml`](compose.yaml) gives each its `.env` plus the addresses that change inside Docker. Containers reach each other by service name (`auth-server:8080`) on the back channel, while anything your browser follows stays on `localhost`. A Redis service is sketched out in `compose.yaml`, commented out, ready to add.
+
 **Tests:**
 ```sh
 go test ./...                     # in each module; uses fakes, no servers needed
