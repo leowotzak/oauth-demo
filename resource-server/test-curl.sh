@@ -96,6 +96,12 @@ check "alice sees her notes"    200 '"owner":"user-1","notes":["Buy milk"]' -H "
 check "bob adds a note"         201 "bob's note"                            -H "Authorization: Bearer $BOB" -d "{\"text\":\"bob's note\"}" "$API/notes"
 check "alice can't see it"      200 '"notes":["Buy milk"]'                  -H "Authorization: Bearer $ALICE" "$API/notes"
 
+echo "== Revocation (the auth server's deny list in Redis)"
+REVOKE_ME=$(token client2 "$SECRET2")
+check "works before revoking"   200 '"owner":"client:client2"'              -H "Authorization: Bearer $REVOKE_ME" "$API/notes"
+check "client revokes it"       200 ''                                      -u "client2:$SECRET2" -d "token=$REVOKE_ME" "$AUTH/revoke"
+check "rejected after revoking" 401 'revoked'                               -H "Authorization: Bearer $REVOKE_ME" "$API/notes"
+
 echo
 echo "$pass passed, $fail failed"
 [ $fail = 0 ]
