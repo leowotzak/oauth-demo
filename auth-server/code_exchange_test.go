@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,8 +63,8 @@ func TestCodeExchangeSuccess(t *testing.T) {
 	if resp.TokenType != "Bearer" || resp.Scope != "notes:read" {
 		t.Errorf("got %+v, want a Bearer token with the code's scope notes:read", resp)
 	}
-	if rec, ok := s.tokens.lookup(resp.AccessToken); !ok || rec.clientID != "client1" {
-		t.Errorf("token not usable: %+v", rec)
+	if claims := verifyTestToken(t, s, resp.AccessToken); claims.ClientID != "client1" || claims.Subject != "user-1" {
+		t.Errorf("claims %+v, want client1 acting for user-1", claims)
 	}
 }
 
@@ -102,7 +103,7 @@ func TestCodeExchangeErrors(t *testing.T) {
 			if w.Code != c.wantStatus || resp.Error != c.wantError {
 				t.Errorf("got %d %q (%s), want %d %q", w.Code, resp.Error, resp.ErrorDescription, c.wantStatus, c.wantError)
 			}
-			if len(s.tokens.tokens) != 0 {
+			if strings.Contains(w.Body.String(), "access_token") {
 				t.Error("a token was issued")
 			}
 		})
@@ -167,11 +168,8 @@ func TestAuthorizationCodeFlow(t *testing.T) {
 	if w.Code != http.StatusOK || resp.Scope != "notes:read notes:write" {
 		t.Fatalf("got %d %+v, want 200 with the consented scope", w.Code, resp)
 	}
-	rec, ok := s.tokens.lookup(resp.AccessToken)
-	if !ok {
-		t.Fatal("token not in store")
-	}
-	if rec.userID != "user-1" || rec.clientID != "client1" {
-		t.Errorf("token records client %q user %q, want client1 acting for user-1 (alice)", rec.clientID, rec.userID)
+	claims := verifyTestToken(t, s, resp.AccessToken)
+	if claims.Subject != "user-1" || claims.ClientID != "client1" {
+		t.Errorf("token is for client %q user %q, want client1 acting for user-1 (alice)", claims.ClientID, claims.Subject)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"log"
 	"net/http"
 	"time"
@@ -10,22 +11,26 @@ import (
 
 // server holds everything the HTTP handlers need.
 type server struct {
-	clients  map[string]*ClientRecord
-	users    map[string]*User
-	tokens   *TokenStore
-	tokenTTL time.Duration
-	codes    *CodeStore
-	codeTTL  time.Duration // authorization codes: short-lived (§4.1.2 says at most 10 minutes)
+	clients    map[string]*ClientRecord
+	users      map[string]*User
+	signingKey ed25519.PrivateKey // signs JWT access tokens
+	tokenTTL   time.Duration      // short, because a JWT can't be revoked before it expires
+	codes      *CodeStore
+	codeTTL    time.Duration // authorization codes: short-lived (§4.1.2 says at most 10 minutes)
 }
 
 func newServer() *server {
+	key, err := loadSigningKey(mustGetenv("JWT_SIGNING_KEY"))
+	if err != nil {
+		log.Fatal(err)
+	}
 	return &server{
-		clients:  newClientRegistry(),
-		users:    newUserRegistry(),
-		tokens:   newTokenStore(),
-		tokenTTL: time.Hour,
-		codes:    newCodeStore(),
-		codeTTL:  time.Minute,
+		clients:    newClientRegistry(),
+		users:      newUserRegistry(),
+		signingKey: key,
+		tokenTTL:   15 * time.Minute,
+		codes:      newCodeStore(),
+		codeTTL:    time.Minute,
 	}
 }
 
@@ -34,7 +39,7 @@ func newServer() *server {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", s.handleToken)
-	mux.HandleFunc("POST /introspect", s.handleIntrospect)
+	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
 	mux.HandleFunc("GET /authorize", s.handleAuthorize)
 	mux.HandleFunc("POST /authorize", s.handleAuthorizeSubmit)
 	return mux

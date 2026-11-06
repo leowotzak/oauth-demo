@@ -75,7 +75,7 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Issue the token.
-	token := s.tokens.issue(TokenRecord{clientID: client.id, userID: userID, scope: scope}, s.tokenTTL)
+	token := s.issueAccessToken(client.id, userID, scope)
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken: token,
 		TokenType:   "Bearer",

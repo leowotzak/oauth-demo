@@ -42,11 +42,13 @@ func TestTokenEndpointSuccess(t *testing.T) {
 			}
 			var resp tokenResponse
 			json.Unmarshal(w.Body.Bytes(), &resp)
-			if resp.TokenType != "Bearer" || resp.ExpiresIn != 3600 || resp.Scope != c.wantScope {
-				t.Errorf("got %+v, want scope %q", resp, c.wantScope)
+			if resp.TokenType != "Bearer" || resp.ExpiresIn != 900 || resp.Scope != c.wantScope {
+				t.Errorf("got %+v, want a 15-minute token with scope %q", resp, c.wantScope)
 			}
-			if _, ok := s.tokens.lookup(resp.AccessToken); !ok {
-				t.Error("issued token not in store")
+			// The token is a signed JWT carrying the same scope and no user.
+			claims := verifyTestToken(t, s, resp.AccessToken)
+			if claims.Scope != c.wantScope || claims.Subject != "" {
+				t.Errorf("claims %+v, want scope %q and no sub", claims, c.wantScope)
 			}
 		})
 	}
@@ -79,10 +81,10 @@ func TestTokenEndpointErrors(t *testing.T) {
 			if w.Code != c.wantStatus || resp.Error != c.wantError {
 				t.Errorf("got %d %q, want %d %q", w.Code, resp.Error, c.wantStatus, c.wantError)
 			}
+			if strings.Contains(w.Body.String(), "access_token") {
+				t.Error("a token was issued on a failed request")
+			}
 		})
-	}
-	if len(s.tokens.tokens) != 0 {
-		t.Error("a token was issued on a failed request")
 	}
 }
 
