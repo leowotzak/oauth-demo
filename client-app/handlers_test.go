@@ -11,6 +11,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 const testSecret = "client1-secret"
@@ -23,6 +26,7 @@ type fakes struct {
 	auth, notes *httptest.Server
 	challenge   string // from the /authorize URL the app built
 	exchanges   int    // how many times /token was called
+	revoked     []string
 	noteList    []string
 }
 
@@ -30,9 +34,15 @@ func newFakes(t *testing.T) *fakes {
 	f := &fakes{t: t, noteList: []string{"Buy milk"}}
 
 	f.auth = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.exchanges++
 		r.ParseForm()
 		id, secret, _ := r.BasicAuth()
+		if r.URL.Path == "/revoke" {
+			if id == "client1" && secret == testSecret {
+				f.revoked = append(f.revoked, r.PostForm.Get("token"))
+			}
+			return // 200 OK, like the real /revoke
+		}
+		f.exchanges++
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		switch {
 		case id != "client1" || secret != testSecret:
@@ -70,23 +80,29 @@ func newFakes(t *testing.T) *fakes {
 }
 
 // browser is a test HTTP client that keeps cookies and doesn't follow
-// redirects, so tests can look at each step.
+// redirects, so tests can look at each step. Its app stores sessions in its
+// own fake Redis (redis).
 type browser struct {
 	t      *testing.T
 	client *http.Client
 	base   string
+	redis  *miniredis.Miniredis
 }
 
 func newBrowser(t *testing.T, f *fakes) *browser {
-	a := newApp("client1", testSecret, "http://localhost:9000/callback", f.auth.URL, f.notes.URL)
-	a.oauth.Endpoint.TokenURL = f.auth.URL // the fake answers /token at its root
+	mr := miniredis.RunT(t)
+	return newBrowserWith(t, f, redis.NewClient(&redis.Options{Addr: mr.Addr()}), mr)
+}
+
+func newBrowserWith(t *testing.T, f *fakes, rdb *redis.Client, mr *miniredis.Miniredis) *browser {
+	a := newApp("client1", testSecret, "http://localhost:9000/callback", f.auth.URL, f.notes.URL, rdb)
 	srv := httptest.NewServer(a.routes())
 	t.Cleanup(srv.Close)
 	jar, _ := cookiejar.New(nil)
 	return &browser{t, &http.Client{
 		Jar:           jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}, srv.URL}
+	}, srv.URL, mr}
 }
 
 func (b *browser) get(path string) (*http.Response, string) {
@@ -254,4 +270,65 @@ func TestFailedExchange(t *testing.T) {
 func mustParse(s string) *url.URL {
 	u, _ := url.Parse(s)
 	return u
+}
+
+// Logging out revokes the token at the auth server, not just here.
+func TestLogoutRevokesToken(t *testing.T) {
+	f := newFakes(t)
+	b := newBrowser(t, f)
+	b.get("/callback?code=good-code&state=" + url.QueryEscape(b.startLogin(f).Get("state")))
+
+	b.post("/logout", nil)
+	if len(f.revoked) != 1 || f.revoked[0] != "tok-alice" {
+		t.Errorf("revoked %v, want [tok-alice] (sent as client1)", f.revoked)
+	}
+	if _, home := b.get("/"); !strings.Contains(home, "Log in with auth-server") {
+		t.Error("still logged in after logout")
+	}
+}
+
+// Redis holds only hashed session IDs, so a dump of it can't be used to take
+// over anyone's session.
+func TestSessionIDsAreHashedInRedis(t *testing.T) {
+	f := newFakes(t)
+	b := newBrowser(t, f)
+	b.get("/callback?code=good-code&state=" + url.QueryEscape(b.startLogin(f).Get("state")))
+
+	var id string
+	for _, c := range b.client.Jar.Cookies(mustParse(b.base)) {
+		if c.Name == "session" {
+			id = c.Value
+		}
+	}
+	keys := b.redis.Keys()
+	if id == "" || len(keys) == 0 {
+		t.Fatalf("session cookie %q, keys %v", id, keys)
+	}
+	for _, k := range keys {
+		if strings.Contains(k, id) {
+			t.Errorf("Redis key %q contains the raw session ID", k)
+		}
+	}
+}
+
+// Sessions live in Redis, so a restarted app (same Redis) keeps users logged in.
+func TestSessionSurvivesRestart(t *testing.T) {
+	f := newFakes(t)
+	b := newBrowser(t, f)
+	b.get("/callback?code=good-code&state=" + url.QueryEscape(b.startLogin(f).Get("state")))
+
+	restarted := newBrowserWith(t, f, redis.NewClient(&redis.Options{Addr: b.redis.Addr()}), b.redis)
+	restarted.client.Jar = b.client.Jar // same browser, same cookie
+	if _, home := restarted.get("/"); !strings.Contains(home, "Buy milk") {
+		t.Errorf("logged out after a restart:\n%s", home)
+	}
+}
+
+// Without Redis there's nowhere to keep state and the verifier: stop at /login.
+func TestRedisDown(t *testing.T) {
+	f := newFakes(t)
+	b := newBrowserWith(t, f, redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1}), nil)
+	if resp, _ := b.get("/login"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status %d, want 503", resp.StatusCode)
+	}
 }

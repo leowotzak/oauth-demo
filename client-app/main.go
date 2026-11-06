@@ -1,36 +1,25 @@
 package main
 
 import (
+	"context"
 	"errors"
-	"crypto/rand"
 	"log"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 )
-
-// session is what client-app remembers about one browser. The browser only
-// ever holds a random session ID in a cookie; everything here stays on the
-// server, including the access token ("backend for frontend").
-type session struct {
-	state    string        // CSRF protection for /callback; single use
-	verifier string        // PKCE code_verifier; never leaves this server
-	token    *oauth2.Token // the access token, once logged in
-}
 
 // app is a web app that acts for users: client1 in the authorization code flow.
 type app struct {
 	oauth    *oauth2.Config
 	notesURL string
-
-	mu       sync.Mutex
-	sessions map[string]*session // session ID (cookie value) → session
+	rdb      *redis.Client // sessions (see sessions.go)
 }
 
-func newApp(clientID, clientSecret, redirectURL, authServerURL, notesURL string) *app {
+func newApp(clientID, clientSecret, redirectURL, authServerURL, notesURL string, rdb *redis.Client) *app {
 	return &app{
 		oauth: &oauth2.Config{
 			ClientID:     clientID,
@@ -44,7 +33,7 @@ func newApp(clientID, clientSecret, redirectURL, authServerURL, notesURL string)
 			},
 		},
 		notesURL: notesURL,
-		sessions: map[string]*session{},
+		rdb:      rdb,
 	}
 }
 
@@ -56,29 +45,6 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /notes", a.handleAddNote)
 	mux.HandleFunc("POST /logout", a.handleLogout)
 	return mux
-}
-
-// sessionFor returns the browser's session, creating one (and its cookie) if
-// it doesn't have one yet.
-func (a *app) sessionFor(w http.ResponseWriter, r *http.Request) *session {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if c, err := r.Cookie("session"); err == nil {
-		if s, ok := a.sessions[c.Value]; ok {
-			return s
-		}
-	}
-	id := rand.Text()
-	s := &session{}
-	a.sessions[id] = s
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    id,
-		Path:     "/",
-		HttpOnly: true,                 // page scripts can't read it
-		SameSite: http.SameSiteLaxMode, // sent on the redirect back from the auth server, not on cross-site POSTs
-	})
-	return s
 }
 
 func mustGetenv(key string) string {
@@ -96,11 +62,18 @@ func main() {
 	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("not loading .env: %v", err)
 	}
+	opts, err := redis.ParseURL(mustGetenv("REDIS_URL"))
+	if err != nil {
+		log.Fatalf("REDIS_URL: %v", err)
+	}
 	a := newApp(mustGetenv("CLIENT_ID"), mustGetenv("CLIENT_SECRET"), mustGetenv("REDIRECT_URL"),
-		mustGetenv("AUTH_SERVER_URL"), mustGetenv("NOTES_API_URL"))
+		mustGetenv("AUTH_SERVER_URL"), mustGetenv("NOTES_API_URL"), redis.NewClient(opts))
+	if err := a.rdb.Ping(context.Background()).Err(); err != nil {
+		log.Printf("warning: can't reach Redis yet (%v); logins will fail until it's up", err)
+	}
 
 	// AUTH_SERVER_URL is where the user's browser goes (/authorize). The
-	// /token request comes from this server instead, which may need a
+	// /token and /revoke requests come from this server instead, which may need a
 	// different address, e.g. http://auth-server:8080 inside Docker Compose,
 	// where "localhost" would mean this container.
 	if v := os.Getenv("AUTH_SERVER_INTERNAL_URL"); v != "" {
