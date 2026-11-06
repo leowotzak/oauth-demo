@@ -89,3 +89,30 @@ func (s *server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		}},
 	})
 }
+
+// parseAccessToken checks that a token is one this server issued (header and
+// signature) and returns its claims. It doesn't check expiry; callers decide.
+func (s *server) parseAccessToken(token string) (accessTokenClaims, bool) {
+	var claims accessTokenClaims
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return claims, false
+	}
+	var header map[string]string
+	if decodeSegment(parts[0], &header) != nil || header["alg"] != "EdDSA" || header["typ"] != "at+jwt" {
+		return claims, false
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || !ed25519.Verify(s.signingKey.Public().(ed25519.PublicKey), []byte(parts[0]+"."+parts[1]), sig) {
+		return claims, false
+	}
+	return claims, decodeSegment(parts[1], &claims) == nil
+}
+
+func decodeSegment(seg string, v any) error {
+	b, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}

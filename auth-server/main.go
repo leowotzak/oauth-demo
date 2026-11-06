@@ -50,6 +50,7 @@ func newServer() *server {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /token", s.handleToken)
+	mux.HandleFunc("POST /revoke", s.handleRevoke)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
 	mux.HandleFunc("GET /authorize", s.handleAuthorize)
 	mux.HandleFunc("POST /authorize", s.handleAuthorizeSubmit)
