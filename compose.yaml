@@ -5,11 +5,27 @@
 # The "environment" entries override only what differs inside Docker:
 #   - LISTEN_ADDR: listen on all interfaces, so the published port works
 #   - back-channel URLs: containers reach each other by service name
-#     (auth-server, resource-server), never "localhost", which inside a
-#     container means the container itself
+#     (auth-server, resource-server, redis), never "localhost", which inside
+#     a container means the container itself
 # Front-channel URLs (anything your browser follows) stay on localhost.
+#
+# Running the apps with `go run .` instead? Start just Redis:
+#   docker compose up -d redis
 
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"] # also write changes to disk
+    ports:
+      - "6379:6379" # so `go run .` and redis-cli on your machine can reach it
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   auth-server:
     build:
       context: .
@@ -18,13 +34,12 @@ services:
     env_file: auth-server/.env
     environment:
       LISTEN_ADDR: 0.0.0.0:8080
-      # Later: REDIS_URL: redis://redis:6379/0   (codes, refresh tokens, revocation list)
+      REDIS_URL: redis://redis:6379/0 # authorization codes, revoked token IDs
     ports:
       - "8080:8080"
-    # Later, with Redis:
-    # depends_on:
-    #   redis:
-    #     condition: service_healthy
+    depends_on:
+      redis:
+        condition: service_healthy
 
   resource-server:
     build:
@@ -37,11 +52,14 @@ services:
       # Back channel: fetch the public key from the auth-server container.
       # ISSUER stays http://localhost:8080: it's the name tokens carry, not an address.
       JWKS_URL: http://auth-server:8080/.well-known/jwks.json
-      # Later: REDIS_URL: redis://redis:6379/0   (revoked token IDs, notes)
+      REDIS_URL: redis://redis:6379/0 # notes, and checking revoked token IDs
     ports:
       - "8081:8081"
     depends_on:
-      - auth-server
+      redis:
+        condition: service_healthy
+      auth-server:
+        condition: service_started
 
   client-app:
     build:
@@ -53,31 +71,19 @@ services:
       LISTEN_ADDR: 0.0.0.0:9000
       # Front channel: your browser follows this to /authorize.
       AUTH_SERVER_URL: http://localhost:8080
-      # Back channel: client-app's own /token request, from inside Docker.
+      # Back channel: client-app's own /token and /revoke requests, from inside Docker.
       AUTH_SERVER_INTERNAL_URL: http://auth-server:8080
       NOTES_API_URL: http://resource-server:8081
-      # Later: REDIS_URL: redis://redis:6379/0   (sessions)
+      REDIS_URL: redis://redis:6379/0 # sessions
     ports:
       - "9000:9000"
     depends_on:
-      - auth-server
-      - resource-server
+      redis:
+        condition: service_healthy
+      auth-server:
+        condition: service_started
+      resource-server:
+        condition: service_started
 
-  # Ready for Redis: uncomment this service and the volume below, then add
-  # REDIS_URL to the services above that use it.
-  #
-  # redis:
-  #   image: redis:7-alpine
-  #   command: ["redis-server", "--appendonly", "yes"]   # also write changes to disk
-  #   ports:
-  #     - "6379:6379"            # optional: only for inspecting with redis-cli from your machine
-  #   volumes:
-  #     - redis-data:/data
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 5
-
-# volumes:
-#   redis-data:
+volumes:
+  redis-data:
