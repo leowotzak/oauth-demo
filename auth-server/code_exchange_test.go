@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -29,14 +30,27 @@ func TestPKCEMatches(t *testing.T) {
 }
 
 // issueTestCode stores a code for alice and client1, as POST /authorize would.
+// A ttl of zero or less gives a code that has already expired: Redis can't
+// store a negative TTL, so the fake Redis's clock is moved past it instead.
 func issueTestCode(s *server, ttl time.Duration) string {
-	return s.codes.issue(AuthCode{
-		clientID:    "client1",
-		userID:      "user-1",
-		redirectURI: callback,
-		scope:       []string{"notes:read"},
-		challenge:   exampleChallenge,
+	expired := ttl <= 0
+	if expired {
+		ttl = time.Second
+	}
+	code, err := s.codes.issue(context.Background(), AuthCode{
+		ClientID:    "client1",
+		UserID:      "user-1",
+		RedirectURI: callback,
+		Scope:       []string{"notes:read"},
+		Challenge:   exampleChallenge,
 	}, ttl)
+	if err != nil {
+		panic(err)
+	}
+	if expired {
+		testRedis.FastForward(2 * time.Second)
+	}
+	return code
 }
 
 // exchangeForm is a correct code exchange; tests change one field at a time.

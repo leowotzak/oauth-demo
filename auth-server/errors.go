@@ -15,6 +15,7 @@ const (
 	errInvalidScope            = "invalid_scope"
 	errInvalidGrant            = "invalid_grant"
 	errAccessDenied            = "access_denied"
+	errTemporarilyUnavailable  = "temporarily_unavailable" // a dependency (Redis) is down
 )
 
 type errorResponse struct {

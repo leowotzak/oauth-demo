@@ -1,14 +1,16 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"crypto/ed25519"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
 // server holds everything the HTTP handlers need.
@@ -17,6 +19,7 @@ type server struct {
 	users      map[string]*User
 	signingKey ed25519.PrivateKey // signs JWT access tokens
 	tokenTTL   time.Duration      // short, because a JWT can't be revoked before it expires
+	rdb        *redis.Client      // authorization codes and revoked token IDs
 	codes      *CodeStore
 	codeTTL    time.Duration // authorization codes: short-lived (§4.1.2 says at most 10 minutes)
 }
@@ -26,12 +29,18 @@ func newServer() *server {
 	if err != nil {
 		log.Fatal(err)
 	}
+	opts, err := redis.ParseURL(mustGetenv("REDIS_URL"))
+	if err != nil {
+		log.Fatalf("REDIS_URL: %v", err)
+	}
+	rdb := redis.NewClient(opts)
 	return &server{
 		clients:    newClientRegistry(),
 		users:      newUserRegistry(),
 		signingKey: key,
 		tokenTTL:   15 * time.Minute,
-		codes:      newCodeStore(),
+		rdb:        rdb,
+		codes:      &CodeStore{rdb},
 		codeTTL:    time.Minute,
 	}
 }
@@ -57,6 +66,9 @@ func main() {
 	}
 
 	s := newServer()
+	if err := s.rdb.Ping(context.Background()).Err(); err != nil {
+		log.Printf("warning: can't reach Redis yet (%v); logins will fail until it's up", err)
+	}
 
 	// Plain HTTP for the tutorial; RFC 6749 requires TLS in real deployments.
 	addr := "localhost:8080"

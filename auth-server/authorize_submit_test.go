@@ -31,6 +31,7 @@ func postAuthorize(s *server, form url.Values) *httptest.ResponseRecorder {
 
 func TestAuthorizeSubmitIssuesCode(t *testing.T) {
 	s := newServer()
+	testRedis.FlushAll()
 	w := postAuthorize(s, validSubmit())
 
 	if w.Code != http.StatusFound {
@@ -49,29 +50,30 @@ func TestAuthorizeSubmitIssuesCode(t *testing.T) {
 	}
 
 	// The stored code must be tied to everything /token will check.
-	rec := s.codes.codes[hashSecret(code)]
+	rec := storedCode(t, code)
 	if rec == nil {
-		t.Fatal("code not in store")
+		t.Fatal("code not in Redis")
 	}
-	if rec.clientID != "client1" || rec.userID != "user-1" || rec.redirectURI != callback || rec.used {
+	if rec.ClientID != "client1" || rec.UserID != "user-1" || rec.RedirectURI != callback {
 		t.Errorf("got %+v", rec)
 	}
-	if !slices.Equal(rec.scope, []string{"notes:read", "notes:write"}) {
-		t.Errorf("scope = %v", rec.scope)
+	if !slices.Equal(rec.Scope, []string{"notes:read", "notes:write"}) {
+		t.Errorf("scope = %v", rec.Scope)
 	}
-	if rec.challenge != "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" {
-		t.Errorf("challenge = %q", rec.challenge)
+	if rec.Challenge != "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" {
+		t.Errorf("challenge = %q", rec.Challenge)
 	}
-	if ttl := time.Until(rec.expiresAt); ttl <= 0 || ttl > time.Minute {
+	if ttl := testRedis.TTL(codeKey(code)); ttl <= 0 || ttl > time.Minute {
 		t.Errorf("code expires in %v, want within a minute", ttl)
 	}
-	if _, stored := s.codes.codes[code]; stored {
-		t.Error("plaintext code used as a map key")
+	if testRedis.Exists("code:" + code) {
+		t.Error("plaintext code used as a Redis key")
 	}
 }
 
 func TestAuthorizeSubmitCodesAreUnique(t *testing.T) {
 	s := newServer()
+	testRedis.FlushAll()
 	a := postAuthorize(s, validSubmit()).Header().Get("Location")
 	b := postAuthorize(s, validSubmit()).Header().Get("Location")
 	if a == b {
@@ -81,11 +83,12 @@ func TestAuthorizeSubmitCodesAreUnique(t *testing.T) {
 
 func TestAuthorizeSubmitDeny(t *testing.T) {
 	s := newServer()
+	testRedis.FlushAll()
 	f := validSubmit()
 	f.Set("decision", "deny")
 	f.Set("password", "") // denying shouldn't need a password
 	assertErrorRedirect(t, postAuthorize(s, f), errAccessDenied, "xyz123")
-	if len(s.codes.codes) != 0 {
+	if codeCount() != 0 {
 		t.Error("a code was issued after Deny")
 	}
 }
@@ -100,6 +103,7 @@ func TestAuthorizeSubmitFailedLogin(t *testing.T) {
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := newServer()
+			testRedis.FlushAll()
 			f := validSubmit()
 			change(f)
 			w := postAuthorize(s, f)
@@ -115,7 +119,7 @@ func TestAuthorizeSubmitFailedLogin(t *testing.T) {
 			if !strings.Contains(body, `name="state" value="xyz123"`) {
 				t.Error("page lost the request details, so a retry would fail")
 			}
-			if len(s.codes.codes) != 0 {
+			if codeCount() != 0 {
 				t.Error("a code was issued after a failed login")
 			}
 		})
@@ -127,13 +131,14 @@ func TestAuthorizeSubmitFailedLogin(t *testing.T) {
 func TestAuthorizeSubmitRechecksRequest(t *testing.T) {
 	t.Run("tampered redirect_uri is never redirected to", func(t *testing.T) {
 		s := newServer()
+		testRedis.FlushAll()
 		f := validSubmit()
 		f.Set("redirect_uri", "https://evil.example/steal")
 		w := postAuthorize(s, f)
 		if w.Code != http.StatusBadRequest || w.Header().Get("Location") != "" {
 			t.Errorf("status %d, Location %q; want 400 and no redirect", w.Code, w.Header().Get("Location"))
 		}
-		if len(s.codes.codes) != 0 {
+		if codeCount() != 0 {
 			t.Error("a code was issued")
 		}
 	})
@@ -151,10 +156,11 @@ func TestAuthorizeSubmitRechecksRequest(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := newServer()
+			testRedis.FlushAll()
 			f := validSubmit()
 			c.change(f)
 			assertErrorRedirect(t, postAuthorize(s, f), c.wantError, "xyz123")
-			if len(s.codes.codes) != 0 {
+			if codeCount() != 0 {
 				t.Error("a code was issued")
 			}
 		})

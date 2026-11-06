@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -117,13 +118,18 @@ func (s *server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Issue a short-lived, single-use code tied to everything /token will
 	//    check, and send the browser back to the client with it.
-	code := s.codes.issue(AuthCode{
-		clientID:    req.client.id,
-		userID:      user.id,
-		redirectURI: req.redirectURI,
-		scope:       req.scope,
-		challenge:   req.challenge,
+	code, err := s.codes.issue(r.Context(), AuthCode{
+		ClientID:    req.client.id,
+		UserID:      user.id,
+		RedirectURI: req.redirectURI,
+		Scope:       req.scope,
+		Challenge:   req.challenge,
 	}, s.codeTTL)
+	if err != nil {
+		log.Printf("issuing code: %v", err)
+		http.Error(w, "The login couldn't be completed right now. Please try again.", http.StatusServiceUnavailable)
+		return
+	}
 	redirectWithParams(w, r, req.redirectURI, url.Values{"code": {code}}, req.state)
 }
 
