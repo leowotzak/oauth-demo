@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"crypto/ed25519"
 	"log"
 	"net/http"
@@ -56,12 +57,18 @@ func mustGetenv(key string) string {
 }
 
 func main() {
-	if err := godotenv.Load(); err != nil {
+	// A missing .env is normal in Docker, where Compose passes the settings
+	// in as environment variables. Only a file that exists but can't be read
+	// is worth reporting.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("not loading .env: %v", err)
 	}
 	s := newServer(mustGetenv("JWKS_URL"), mustGetenv("ISSUER"), mustGetenv("AUDIENCE"))
 
 	addr := "localhost:8081"
+	if v := os.Getenv("LISTEN_ADDR"); v != "" {
+		addr = v // e.g. 0.0.0.0:8081 in a container, so it's reachable from outside
+	}
 	log.Printf("notes API listening on http://%s (keys from %s)", addr, s.jwksURL)
 	log.Fatal(http.ListenAndServe(addr, s.routes()))
 }

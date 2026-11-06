@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"crypto/ed25519"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -47,7 +49,10 @@ func (s *server) routes() http.Handler {
 
 func main() {
 	// Load the client secrets from .env. Variables already set win.
-	if err := godotenv.Load(); err != nil {
+	// A missing .env is normal in Docker, where Compose passes the settings
+	// in as environment variables. Only a file that exists but can't be read
+	// is worth reporting.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("not loading .env: %v", err)
 	}
 
@@ -55,6 +60,9 @@ func main() {
 
 	// Plain HTTP for the tutorial; RFC 6749 requires TLS in real deployments.
 	addr := "localhost:8080"
+	if v := os.Getenv("LISTEN_ADDR"); v != "" {
+		addr = v // e.g. 0.0.0.0:8080 in a container, so it's reachable from outside
+	}
 	log.Printf("auth server listening on http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, s.routes()))
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"crypto/rand"
 	"log"
 	"net/http"
@@ -89,13 +90,27 @@ func mustGetenv(key string) string {
 }
 
 func main() {
-	if err := godotenv.Load(); err != nil {
+	// A missing .env is normal in Docker, where Compose passes the settings
+	// in as environment variables. Only a file that exists but can't be read
+	// is worth reporting.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("not loading .env: %v", err)
 	}
 	a := newApp(mustGetenv("CLIENT_ID"), mustGetenv("CLIENT_SECRET"), mustGetenv("REDIRECT_URL"),
 		mustGetenv("AUTH_SERVER_URL"), mustGetenv("NOTES_API_URL"))
 
+	// AUTH_SERVER_URL is where the user's browser goes (/authorize). The
+	// /token request comes from this server instead, which may need a
+	// different address, e.g. http://auth-server:8080 inside Docker Compose,
+	// where "localhost" would mean this container.
+	if v := os.Getenv("AUTH_SERVER_INTERNAL_URL"); v != "" {
+		a.oauth.Endpoint.TokenURL = v + "/token"
+	}
+
 	addr := "localhost:9000"
+	if v := os.Getenv("LISTEN_ADDR"); v != "" {
+		addr = v // e.g. 0.0.0.0:9000 in a container, so it's reachable from outside
+	}
 	log.Printf("client-app listening on http://%s (as %s)", addr, a.oauth.ClientID)
 	log.Fatal(http.ListenAndServe(addr, a.routes()))
 }
