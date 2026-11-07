@@ -46,7 +46,8 @@ check() {
 VERIFIER=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk               # RFC 7636 example
 CHALLENGE=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
 CALLBACK=http://localhost:9000/callback
-user_token() {
+# user_login USER PASSWORD → the full token response (access and refresh tokens)
+user_login() {
   local location code
   location=$(curl -s -o /dev/null -w '%{redirect_url}' \
     -d response_type=code -d client_id=client1 --data-urlencode "redirect_uri=$CALLBACK" \
@@ -54,9 +55,10 @@ user_token() {
     -d "username=$1" --data-urlencode "password=$2" -d decision=allow "$AUTH/authorize")
   code=$(echo "$location" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
   curl -s -u "client1:$SECRET1" -d grant_type=authorization_code -d "code=$code" \
-    --data-urlencode "redirect_uri=$CALLBACK" -d "code_verifier=$VERIFIER" "$AUTH/token" \
-    | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'
+    --data-urlencode "redirect_uri=$CALLBACK" -d "code_verifier=$VERIFIER" "$AUTH/token"
 }
+field() { sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }   # field NAME < json
+user_token() { user_login "$1" "$2" | field access_token; }
 
 READ=$(token client2 "$SECRET2")                                # notes:read
 WRITE=$(token client3 "$SECRET3" "notes:read notes:write")      # notes:read notes:write
@@ -101,6 +103,20 @@ REVOKE_ME=$(token client2 "$SECRET2")
 check "works before revoking"   200 '"owner":"client:client2"'              -H "Authorization: Bearer $REVOKE_ME" "$API/notes"
 check "client revokes it"       200 ''                                      -u "client2:$SECRET2" -d "token=$REVOKE_ME" "$AUTH/revoke"
 check "rejected after revoking" 401 'revoked'                               -H "Authorization: Bearer $REVOKE_ME" "$API/notes"
+
+
+echo "== Refresh tokens (rotation, and reuse revokes the whole login)"
+LOGIN=$(user_login alice "$ALICE_PASSWORD")
+OLD_REFRESH=$(echo "$LOGIN" | field refresh_token)
+REFRESHED=$(curl -s -u "client1:$SECRET1" -d grant_type=refresh_token -d "refresh_token=$OLD_REFRESH" "$AUTH/token")
+NEW_ACCESS=$(echo "$REFRESHED" | field access_token); NEW_REFRESH=$(echo "$REFRESHED" | field refresh_token)
+[[ -n "$NEW_REFRESH" && "$NEW_REFRESH" != "$OLD_REFRESH" ]] \
+  && { pass=$((pass + 1)); echo "PASS  refresh rotates the refresh token"; } \
+  || { fail=$((fail + 1)); echo "FAIL  refresh response: $REFRESHED"; }
+check "new access token works"  200 '"owner":"user-1"'                      -H "Authorization: Bearer $NEW_ACCESS" "$API/notes"
+check "old refresh token reused" 400 'this login has been revoked'          -u "client1:$SECRET1" -d grant_type=refresh_token -d "refresh_token=$OLD_REFRESH" "$AUTH/token"
+check "so the newest one is dead" 400 invalid_grant                         -u "client1:$SECRET1" -d grant_type=refresh_token -d "refresh_token=$NEW_REFRESH" "$AUTH/token"
+check "and its access token too" 401 'revoked'                              -H "Authorization: Bearer $NEW_ACCESS" "$API/notes"
 
 echo
 echo "$pass passed, $fail failed"
