@@ -61,7 +61,7 @@ func newClientRegistry() map[string]*ClientRecord {
 		"client1": {
 			id:            "client1",
 			secretHash:    mustGetenv("SECRET1_HASH"),
-			grantTypes:    []string{"authorization_code"},
+			grantTypes:    []string{"authorization_code", "refresh_token"},
 			scopes:        []string{"notes:read", "notes:write"},
 			defaultScopes: []string{"notes:read"},
 			redirectURIs:  []string{"http://localhost:9000/callback"},

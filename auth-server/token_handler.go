@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"log"
 	"net/http"
 	"slices"
@@ -11,21 +12,23 @@ import (
 	"time"
 )
 
-// tokenResponse is a successful token response (RFC 6749 §5.1).
-// No refresh_token yet: §4.4.3 says not to issue one for client_credentials,
-// and refresh tokens for the authorization code flow aren't implemented.
+// tokenResponse is a successful token response (RFC 6749 §5.1). A refresh
+// token comes only with logins (authorization code, and each refresh):
+// §4.4.3 says not to issue one for client_credentials.
 type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
-	Scope       string `json:"scope"`
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	Scope        string `json:"scope"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 // supportedGrantTypes are the grant_type values this server implements.
-var supportedGrantTypes = []string{"client_credentials", "authorization_code"}
+var supportedGrantTypes = []string{"client_credentials", "authorization_code", "refresh_token"}
 
 // handleToken implements POST /token for the client credentials grant
-// (RFC 6749 §4.4) and for exchanging authorization codes (§4.1.3).
+// (RFC 6749 §4.4), exchanging authorization codes (§4.1.3), and refreshing
+// (§6).
 // Each check that fails returns its own error code (§5.2).
 func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// 1. Authenticate the client. Parameters come from the form-encoded body
@@ -53,7 +56,8 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Work out the scope and the user, which each grant decides differently.
 	var scope []string
-	var userID string // stays empty for client credentials: no user is involved
+	var userID string           // stays empty for client credentials: no user is involved
+	var refreshed *RefreshToken // set for the refresh grant: the token being rotated
 	switch grantType {
 	case "client_credentials":
 		// The client asks for scopes itself.
@@ -72,16 +76,84 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		scope = code.Scope
 		userID = code.UserID // the token acts for the user who logged in
+
+	case "refresh_token":
+		// The same login continues: same user, and the approved scope or less.
+		rec, ok := s.useRefreshToken(w, r, client)
+		if !ok {
+			return
+		}
+		refreshed = rec
+		userID = rec.UserID
+		scope = rec.Scope
+		if raw := form.Get("scope"); raw != "" {
+			// §6: a client may ask for less than was approved, never more.
+			scope = strings.Fields(raw)
+			for _, sc := range scope {
+				if !slices.Contains(rec.Scope, sc) {
+					writeError(w, http.StatusBadRequest, errInvalidScope, "scope "+sc+" was not part of the original grant")
+					return
+				}
+			}
+		}
 	}
 
-	// 4. Issue the token.
+	// 4. Issue the access token.
 	token := s.issueAccessToken(client.id, userID, scope)
-	writeJSON(w, http.StatusOK, tokenResponse{
+	resp := tokenResponse{
 		AccessToken: token,
 		TokenType:   "Bearer",
 		ExpiresIn:   int(s.tokenTTL / time.Second),
 		Scope:       strings.Join(scope, " "),
-	})
+	}
+
+	// 5. And a refresh token, for logins by clients allowed to refresh: a new
+	//    family after a code exchange, or the next token in the family after a
+	//    refresh (rotation). The refresh token keeps the family's full scope,
+	//    even when this access token was narrowed (§6).
+	var err error
+	switch {
+	case refreshed != nil:
+		resp.RefreshToken, err = s.rotate(r.Context(), form.Get("refresh_token"), *refreshed, token)
+	case grantType == "authorization_code" && slices.Contains(client.grantTypes, "refresh_token"):
+		resp.RefreshToken, err = s.startFamily(r.Context(), client.id, userID, scope, token)
+	}
+	if err != nil {
+		log.Printf("storing refresh token: %v", err)
+		writeError(w, http.StatusServiceUnavailable, errTemporarilyUnavailable, "try again shortly")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// useRefreshToken checks a refresh request (RFC 6749 §6) and returns the
+// token's record, which is now used up. Failures are invalid_grant; on
+// failure it has already written the response.
+func (s *server) useRefreshToken(w http.ResponseWriter, r *http.Request, client *ClientRecord) (*RefreshToken, bool) {
+	token := r.PostForm.Get("refresh_token")
+	if token == "" {
+		writeError(w, http.StatusBadRequest, errInvalidRequest, "missing refresh_token")
+		return nil, false
+	}
+	rec, err := s.redeemRefresh(r.Context(), token)
+	switch {
+	case errors.Is(err, errReuse):
+		log.Printf("refresh token reused: revoked its family (client %s)", client.id)
+		writeError(w, http.StatusBadRequest, errInvalidGrant, "refresh token was already used; this login has been revoked")
+		return nil, false
+	case err != nil:
+		log.Printf("redeeming refresh token: %v", err)
+		writeError(w, http.StatusServiceUnavailable, errTemporarilyUnavailable, "try again shortly")
+		return nil, false
+	case rec == nil:
+		writeError(w, http.StatusBadRequest, errInvalidGrant, "refresh token is invalid or expired")
+		return nil, false
+	case rec.ClientID != client.id:
+		// Like codes, a refresh token only works for the client it was issued to.
+		writeError(w, http.StatusBadRequest, errInvalidGrant, "refresh token was issued to another client")
+		return nil, false
+	}
+	return rec, true
 }
 
 // redeemCode checks an authorization code exchange (RFC 6749 §4.1.3) and

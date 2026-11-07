@@ -18,8 +18,10 @@ type server struct {
 	clients    map[string]*ClientRecord
 	users      map[string]*User
 	signingKey ed25519.PrivateKey // signs JWT access tokens
-	tokenTTL   time.Duration      // short, because a JWT can't be revoked before it expires
-	rdb        *redis.Client      // authorization codes and revoked token IDs
+	tokenTTL   time.Duration      // access tokens: short, since a JWT's signature can't be undone
+	refreshTTL time.Duration      // a login's absolute lifetime: refresh tokens can't extend it
+	now        func() time.Time   // the clock for login lifetimes; tests replace it
+	rdb        *redis.Client      // authorization codes, refresh tokens, revoked token IDs
 	codes      *CodeStore
 	codeTTL    time.Duration // authorization codes: short-lived (§4.1.2 says at most 10 minutes)
 }
@@ -39,6 +41,8 @@ func newServer() *server {
 		users:      newUserRegistry(),
 		signingKey: key,
 		tokenTTL:   15 * time.Minute,
+		refreshTTL: 24 * time.Hour,
+		now:        time.Now,
 		rdb:        rdb,
 		codes:      &CodeStore{rdb},
 		codeTTL:    time.Minute,
