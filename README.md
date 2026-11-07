@@ -44,7 +44,7 @@ The access token is a signed JWT. Step 8 happens only once: the notes API fetche
 | [`auth-server`](auth-server) | 8080 | Authorization server: users, clients, `/authorize`, `/token`, `/revoke`, and its public key at `/.well-known/jwks.json` |
 | [`resource-server`](resource-server) | 8081 | Resource server: a notes API protected by Bearer tokens |
 | [`client-app`](client-app) | 9000 | Client: a web app that logs users in as `client1` |
-| Redis | 6379 | Shared state: authorization codes, client-app sessions, revoked token IDs and notes |
+| Redis | 6379 | Shared state: authorization codes, refresh tokens, client-app sessions, revoked token IDs and notes |
 
 The client app deliberately uses a standard OAuth client library, [`golang.org/x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2). If it completes the flow against the hand-written server unchanged, the server follows the spec.
 
@@ -91,8 +91,9 @@ go test ./...                     # in each module; uses fakes, no servers neede
 
 ## Design choices
 - **JWT access tokens signed with Ed25519** ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)). The notes API checks them itself, so it doesn't depend on the auth server for every request. A valid signature can't be undone, so tokens last only 15 minutes, and revocation needs the deny list below.
-- **Revocation through a deny list in Redis.** `POST /revoke` (RFC 7009) adds a token's ID (`jti`) to Redis until the token would have expired anyway, and the notes API checks that list after the signature. Logging out of the client app revokes its token. If Redis is down, the notes API **fails closed**, so a revoked token can never slip through.
-- **Short-lived state lives in Redis**, with TTLs doing the expiry: authorization codes (redeemed with atomic `GETDEL`, so they're single use), client app sessions, and the deny list. Notes are there too. State survives restarts, and several copies of each app could share it.
+- **Refresh tokens with rotation and reuse detection.** Each refresh replaces the refresh token, and an old one coming back revokes the whole login, since it means someone copied it. A login lasts at most 24 hours, however often it's refreshed.
+- **Revocation through a deny list in Redis.** `POST /revoke` (RFC 7009) adds a token's ID (`jti`) to Redis until the token would have expired anyway, and the notes API checks that list after the signature. Logging out of the client app revokes its refresh token, ending the whole login. If Redis is down, the notes API **fails closed**, so a revoked token can never slip through.
+- **Short-lived state lives in Redis**, with TTLs doing the expiry: authorization codes and refresh tokens (redeemed with atomic `GETDEL`, so they're single use), client app sessions, and the deny list. Notes are there too. State survives restarts, and several copies of each app could share it.
 - **Secrets, codes and session IDs are stored only as hashes**, in `.env` and in Redis. SHA-256 for long random values; bcrypt for human passwords, which are guessable.
 - **Exact redirect URI matching**, and an auth server that never redirects to an unverified URI, even for errors.
 - **PKCE is required, `S256` only.**
@@ -101,7 +102,6 @@ go test ./...                     # in each module; uses fakes, no servers neede
 - **Simplified on purpose.** The code skips production hardening such as validating config, rate limiting and CSRF tokens on the login form, so the protocol logic stays readable. Each module's README lists what it leaves out.
 
 ## Not implemented yet
-- Refresh tokens with rotation
 - Signing key rotation (there's one fixed key)
 - Public clients (no secret, PKCE only)
 - Authorization server metadata ([RFC 8414](https://www.rfc-editor.org/rfc/rfc8414))
