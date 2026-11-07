@@ -20,7 +20,7 @@ import (
 // take over anyone's session. Two kinds of record hang off each session:
 //
 //	login:<hash>  the state and PKCE verifier between /login and /callback
-//	token:<hash>  the access token, once logged in (never sent to the browser)
+//	token:<hash>  the access and refresh tokens, once logged in (never sent to the browser)
 
 // loginTTL is how long a user has to finish logging in at the auth server.
 const loginTTL = 10 * time.Minute
@@ -88,11 +88,17 @@ func (a *app) tokenOf(ctx context.Context, id string) (*oauth2.Token, error) {
 	return &tok, nil
 }
 
-// saveToken keeps the token until it expires; after that it's useless, so
-// Redis can drop it.
+// sessionTTL matches the auth server's login lifetime: after that, the refresh
+// token stops working, so there's no point keeping it.
+const sessionTTL = 24 * time.Hour
+
+// saveToken keeps the tokens for as long as they can be used: the whole login
+// when there's a refresh token, otherwise until the access token expires.
 func (a *app) saveToken(ctx context.Context, id string, tok *oauth2.Token) error {
 	ttl := time.Until(tok.Expiry)
-	if tok.Expiry.IsZero() || ttl <= 0 {
+	if tok.RefreshToken != "" {
+		ttl = sessionTTL
+	} else if tok.Expiry.IsZero() || ttl <= 0 {
 		ttl = time.Hour
 	}
 	b, _ := json.Marshal(tok)

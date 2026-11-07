@@ -48,7 +48,7 @@ func (a *app) handleHome(w http.ResponseWriter, r *http.Request) {
 		render(w, http.StatusOK, page{})
 		return
 	}
-	notes, err := a.callNotes(r.Context(), tok, http.MethodGet, nil)
+	notes, err := a.callNotes(r.Context(), id, tok, http.MethodGet, nil)
 	if errors.Is(err, errTokenRejected) {
 		a.forgetToken(r.Context(), id)
 		render(w, http.StatusOK, page{Message: "Your session expired. Log in again."})
@@ -137,7 +137,7 @@ func (a *app) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"text": r.PostFormValue("text")})
-	_, err = a.callNotes(r.Context(), tok, http.MethodPost, body)
+	_, err = a.callNotes(r.Context(), id, tok, http.MethodPost, body)
 	if errors.Is(err, errTokenRejected) {
 		a.forgetToken(r.Context(), id)
 	} else if err != nil {
@@ -146,8 +146,10 @@ func (a *app) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// handleLogout revokes the token at the auth server, so it stops working
-// everywhere straight away, then forgets it here.
+// handleLogout revokes the login at the auth server, so it stops working
+// everywhere straight away, then forgets it here. Revoking the refresh token
+// ends the whole login, including its latest access token; with no refresh
+// token, the access token is revoked on its own.
 func (a *app) handleLogout(w http.ResponseWriter, r *http.Request) {
 	id := sessionID(w, r)
 	tok, err := a.tokenOf(r.Context(), id)
@@ -156,8 +158,12 @@ func (a *app) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tok != nil {
-		if err := a.revoke(r.Context(), tok.AccessToken); err != nil {
-			// Still log the user out here; the token expires within 15 minutes.
+		token := tok.AccessToken
+		if tok.RefreshToken != "" {
+			token = tok.RefreshToken
+		}
+		if err := a.revoke(r.Context(), token); err != nil {
+			// Still log the user out here; the access token expires within 15 minutes.
 			log.Printf("revoking token: %v", err)
 		}
 	}
@@ -204,13 +210,39 @@ type notesResponse struct {
 	Notes []string `json:"notes"`
 }
 
-// callNotes calls the notes API with the token (GET to list, POST with a JSON
-// body to add). a.oauth.Client adds "Authorization: Bearer <token>" to every
-// request it sends. Both calls answer with the owner's notes.
-func (a *app) callNotes(ctx context.Context, tok *oauth2.Token, method string, body []byte) (notesResponse, error) {
+// freshToken returns an access token that's valid now. If the stored one has
+// expired, it uses the refresh token to get a new pair from the auth server
+// (grant_type=refresh_token) and saves both, because the auth server rotates
+// refresh tokens: the old one is now used up, and presenting it again would
+// look like theft and end the login.
+func (a *app) freshToken(ctx context.Context, id string, tok *oauth2.Token) (*oauth2.Token, error) {
+	if tok.Valid() { // not expired (x/oauth2 counts a token as expired 10s early)
+		return tok, nil
+	}
+	if tok.RefreshToken == "" {
+		return nil, errTokenRejected
+	}
+	// TokenSource.Token sees the expired token and refreshes it: one POST
+	// /token with the refresh token, authenticated as this client.
+	fresh, err := a.oauth.TokenSource(ctx, tok).Token()
+	if err != nil {
+		log.Printf("refreshing token: %v", err) // revoked, reused or past the login's lifetime
+		return nil, errTokenRejected
+	}
+	if err := a.saveToken(ctx, id, fresh); err != nil {
+		return nil, err
+	}
+	return fresh, nil
+}
+
+// callNotes calls the notes API with the session's token (GET to list, POST
+// with a JSON body to add), refreshing it first if it has expired. Both calls
+// answer with the owner's notes.
+func (a *app) callNotes(ctx context.Context, id string, tok *oauth2.Token, method string, body []byte) (notesResponse, error) {
 	var notes notesResponse
-	if !tok.Valid() {
-		return notes, errTokenRejected // expired: no point asking
+	tok, err := a.freshToken(ctx, id, tok)
+	if err != nil {
+		return notes, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, a.notesURL+"/notes", bytes.NewReader(body))
 	if err != nil {
@@ -218,7 +250,12 @@ func (a *app) callNotes(ctx context.Context, tok *oauth2.Token, method string, b
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.oauth.Client(ctx, tok).Do(req)
+	// A client with a fixed token, not a.oauth.Client(ctx, tok): that one
+	// refreshes on its own when it thinks the token has expired, and throws
+	// the new pair away. With rotation, the saved refresh token would then be
+	// used up, and the next refresh would look like reuse and end the login.
+	// Refreshing only happens in freshToken, which always saves the result.
+	resp, err := oauth2.NewClient(ctx, oauth2.StaticTokenSource(tok)).Do(req)
 	if err != nil {
 		return notes, err
 	}

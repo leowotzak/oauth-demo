@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -18,20 +19,32 @@ import (
 
 const testSecret = "client1-secret"
 
-// fakes stands in for auth-server's /token and the notes API. It records the
-// code_challenge the app sent at /login, and checks the exchange the same way
-// the real auth server does.
+// fakes stands in for auth-server's /token and /revoke and the notes API. It
+// records the code_challenge the app sent at /login, checks the exchange the
+// same way the real auth server does, and rotates refresh tokens like it.
 type fakes struct {
 	t           *testing.T
 	auth, notes *httptest.Server
 	challenge   string // from the /authorize URL the app built
-	exchanges   int    // how many times /token was called
+	exchanges   int    // how many code exchanges /token handled
+	refreshes   int    // how many refreshes /token handled
+	refresh     string // the one refresh token that currently works
+	expiresIn   int    // lifetime given to access tokens, in seconds
+	valid       map[string]bool
 	revoked     []string
 	noteList    []string
 }
 
 func newFakes(t *testing.T) *fakes {
-	f := &fakes{t: t, noteList: []string{"Buy milk"}}
+	f := &fakes{t: t, noteList: []string{"Buy milk"}, expiresIn: 3600, valid: map[string]bool{}}
+
+	// issue answers /token with a new access token and refresh token.
+	issue := func(w http.ResponseWriter, access, refresh string) {
+		f.valid[access] = true
+		f.refresh = refresh
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q,"token_type":"Bearer","expires_in":%d,"refresh_token":%q}`, access, f.expiresIn, refresh)
+	}
 
 	f.auth = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
@@ -42,11 +55,22 @@ func newFakes(t *testing.T) *fakes {
 			}
 			return // 200 OK, like the real /revoke
 		}
+		if id != "client1" || secret != testSecret {
+			http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+			return
+		}
+		if r.PostForm.Get("grant_type") == "refresh_token" {
+			if r.PostForm.Get("refresh_token") != f.refresh {
+				http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+				return
+			}
+			f.refreshes++ // rotate: a new pair, and the old refresh token stops working
+			issue(w, fmt.Sprintf("tok-alice-%d", f.refreshes), fmt.Sprintf("ref-%d", f.refreshes+1))
+			return
+		}
 		f.exchanges++
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		switch {
-		case id != "client1" || secret != testSecret:
-			http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
 		case r.PostForm.Get("grant_type") != "authorization_code" || r.PostForm.Get("code") != "good-code":
 			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 		case r.PostForm.Get("redirect_uri") != "http://localhost:9000/callback":
@@ -54,14 +78,13 @@ func newFakes(t *testing.T) *fakes {
 		case base64.RawURLEncoding.EncodeToString(sum[:]) != f.challenge:
 			http.Error(w, `{"error":"invalid_grant","error_description":"PKCE"}`, http.StatusBadRequest)
 		default:
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"access_token":"tok-alice","token_type":"Bearer","expires_in":3600}`))
+			issue(w, "tok-alice", "ref-1")
 		}
 	}))
 	t.Cleanup(f.auth.Close)
 
 	f.notes = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer tok-alice" {
+		if token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); !f.valid[token] {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -279,8 +302,9 @@ func TestLogoutRevokesToken(t *testing.T) {
 	b.get("/callback?code=good-code&state=" + url.QueryEscape(b.startLogin(f).Get("state")))
 
 	b.post("/logout", nil)
-	if len(f.revoked) != 1 || f.revoked[0] != "tok-alice" {
-		t.Errorf("revoked %v, want [tok-alice] (sent as client1)", f.revoked)
+	// It revokes the refresh token, which ends the whole login at the auth server.
+	if len(f.revoked) != 1 || f.revoked[0] != "ref-1" {
+		t.Errorf("revoked %v, want [ref-1] (sent as client1)", f.revoked)
 	}
 	if _, home := b.get("/"); !strings.Contains(home, "Log in with auth-server") {
 		t.Error("still logged in after logout")
@@ -330,5 +354,40 @@ func TestRedisDown(t *testing.T) {
 	b := newBrowserWith(t, f, redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1}), nil)
 	if resp, _ := b.get("/login"); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status %d, want 503", resp.StatusCode)
+	}
+}
+
+// An expired access token is refreshed automatically, and the rotated pair is
+// saved: the next refresh must use the new refresh token, not the old one.
+func TestExpiredTokenIsRefreshed(t *testing.T) {
+	f := newFakes(t)
+	f.expiresIn = 1 // x/oauth2 treats this as already expired (10s early)
+	b := newBrowser(t, f)
+	b.get("/callback?code=good-code&state=" + url.QueryEscape(b.startLogin(f).Get("state")))
+
+	if _, home := b.get("/"); !strings.Contains(home, "Buy milk") {
+		t.Fatalf("not refreshed into a working token:\n%s", home)
+	}
+	if f.refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshes)
+	}
+	// The second refresh succeeds only if the app saved ref-2 from the first.
+	if _, home := b.get("/"); !strings.Contains(home, "Buy milk") || f.refreshes != 2 {
+		t.Errorf("second refresh failed (refreshes = %d); the rotated refresh token wasn't saved", f.refreshes)
+	}
+}
+
+// If the refresh is refused (revoked, reused, or past the login's lifetime),
+// the user is logged out and asked to log in again.
+func TestFailedRefreshLogsOut(t *testing.T) {
+	f := newFakes(t)
+	f.expiresIn = 1
+	b := newBrowser(t, f)
+	b.get("/callback?code=good-code&state=" + url.QueryEscape(b.startLogin(f).Get("state")))
+
+	f.refresh = "something-else" // the auth server no longer accepts ours
+	_, home := b.get("/")
+	if !strings.Contains(home, "Log in again") || !strings.Contains(home, "Log in with auth-server") {
+		t.Errorf("not logged out after a refused refresh:\n%s", home)
 	}
 }
