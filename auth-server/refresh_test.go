@@ -178,3 +178,26 @@ func TestLoginLifetimeIsAbsolute(t *testing.T) {
 		t.Errorf("refresh after 24h: status %d, want 400", code)
 	}
 }
+
+// Revoking a refresh token (what logging out does) ends the whole login.
+func TestRevokeRefreshTokenEndsLogin(t *testing.T) {
+	s := newServer()
+	tokens := login(t, s)
+
+	if w := postRevoke(s, "client1", os.Getenv("SECRET1"), url.Values{"token": {tokens.RefreshToken}}.Encode()); w.Code != http.StatusOK {
+		t.Fatalf("revoke: status %d", w.Code)
+	}
+	if code, _, _ := refresh(s, "client1", os.Getenv("SECRET1"), tokens.RefreshToken, ""); code != http.StatusBadRequest {
+		t.Error("refresh token still works after revoking it")
+	}
+	if !testRedis.Exists(revokedKey(jtiOf(t, s, tokens.AccessToken))) {
+		t.Error("the login's access token wasn't revoked with it")
+	}
+
+	// Another client can't revoke it.
+	other := login(t, s)
+	postRevoke(s, "client2", os.Getenv("SECRET2"), url.Values{"token": {other.RefreshToken}}.Encode())
+	if code, _, _ := refresh(s, "client1", os.Getenv("SECRET1"), other.RefreshToken, ""); code != http.StatusOK {
+		t.Error("client2 revoked client1's refresh token")
+	}
+}
